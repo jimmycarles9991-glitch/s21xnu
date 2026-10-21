@@ -41,7 +41,7 @@ diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/sweet_ufs.c
-@@ -0,0 +1,536 @@
+@@ -0,0 +1,542 @@
 +/*
 + * SWEET internal UFS root device (read-only).
 + *
@@ -307,6 +307,12 @@ new file mode 100644
 +ufs_take_over_host(void)
 +{
 +	uint32_t hce = ufs_rd(REG_HCE), hcs = ufs_rd(REG_HCS);
++	if (!(hce & 1)) {
++		ufs_wr(REG_HCE, 1);
++		for (int i = 0; i < 200000 && !(ufs_rd(REG_HCE) & 1); i++) { }
++		hce = ufs_rd(REG_HCE); hcs = ufs_rd(REG_HCS);
++		printf("SWEET UFS: tried HCE=1 -> hce 0x%x hcs 0x%x\n", hce, hcs);
++	}
 +	if (!(hce & 1) || !(hcs & HCS_DP) || !(hcs & HCS_UTRLRDY)) {
 +		printf("SWEET UFS: host not ready (hce 0x%x hcs 0x%x)\n", hce, hcs);
 +		return ENXIO;
