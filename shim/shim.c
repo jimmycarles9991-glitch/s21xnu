@@ -12,12 +12,11 @@
 #include "loader.h"
 #include "ufs.h"
 
-#define IMEM_RESTART_REASON	0x146aa65cUL	/* qcom,msm-imem restart_reason@65c */
-#define RESTART_BOOTLOADER	0x77665500U
-#define PSHOLD			0x0c264000UL
+/* S21: CNTFRQ_EL0 reads 0 on this firmware; the counter really runs at 26 MHz. */
+#define CNTFRQ			26000000UL
 
-#define GICD_BASE		0x17a00000UL
-#define GICR_BASE		0x17a60000UL
+#define GICD_BASE		0x10200000UL
+#define GICR_BASE		0x10240000UL
 #define GICR_SIZE		0x100000UL
 #define GICR_PE_SIZE		0x20000UL
 #define GICR_TYPER		0x08
@@ -30,8 +29,8 @@
 #define GICR_ISPENDR0		(GICR_SGI + 0x200)
 #define GICR_ISACTIVER0		(GICR_SGI + 0x300)
 #define GICR_ICFGR1		(GICR_SGI + 0xc04)
-#define VTIMER_INTID		19	/* DT: <GIC_PPI 3 ...>, not the usual 27 */
-#define PTIMER_INTID		18	/* DT: <GIC_PPI 2 ...> */
+#define VTIMER_INTID		27	/* PPI 11 */
+#define PTIMER_INTID		30	/* PPI 14, NS physical */
 #define SGI_INTID		1
 
 #define PSCI_VERSION		0x84000000UL
@@ -80,7 +79,7 @@ static uint64_t smc(uint64_t fn, uint64_t a1, uint64_t a2, uint64_t a3)
 	register uint64_t x1 __asm__("x1") = a1;
 	register uint64_t x2 __asm__("x2") = a2;
 	register uint64_t x3 __asm__("x3") = a3;
-	__asm__ volatile("smc #0"
+	__asm__ volatile("hvc #0"
 			 : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3)
 			 :
 			 : "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11",
@@ -96,7 +95,7 @@ static uint64_t now(void)
 
 static void delay_ms(unsigned ms)
 {
-	uint64_t end = now() + rsr("cntfrq_el0") / 1000 * ms;
+	uint64_t end = now() + CNTFRQ / 1000 * ms;
 	while (now() < end)
 		;
 }
@@ -106,10 +105,8 @@ static void __attribute__((noreturn)) reset(unsigned after_s)
 	con_skip();
 	con_str("RESET", after_s > 20 ? "in 40s" : "in 20s");
 	delay_ms(after_s * 1000);
-	wr32(IMEM_RESTART_REASON, RESTART_BOOTLOADER);
 	__asm__ volatile("dsb sy" ::: "memory");
 	smc(PSCI_SYSTEM_RESET, 0, 0, 0);
-	wr32(PSHOLD, 0);
 	for (;;)
 		__asm__ volatile("wfe");
 }
@@ -129,9 +126,9 @@ static void irq_handler(void)
 	else
 		irq_other++;
 	if (id == VTIMER_INTID)
-		wsr("cntv_tval_el0", rsr("cntfrq_el0") / 100);	/* 10 ms */
+		wsr("cntv_tval_el0", CNTFRQ / 100);	/* 10 ms */
 	else if (id == PTIMER_INTID)
-		wsr("cntp_tval_el0", rsr("cntfrq_el0") / 100);
+		wsr("cntp_tval_el0", CNTFRQ / 100);
 	wsr("icc_eoir1_el1", iar);
 	isb();
 }
@@ -229,7 +226,7 @@ static void gicd_wait_rwp(void)
 /* Run one interrupt source for ~300 ms and report what the GIC saw. */
 static void irq_window(const char *label, uintptr_t r, int src)
 {
-	uint64_t f = rsr("cntfrq_el0");
+	uint64_t f = CNTFRQ;
 	uint32_t pend = 0, act = 0, isr = 0, hppi = 0x3ff, ist = 0;
 
 	irq_count = irq_other = 0;
@@ -367,7 +364,7 @@ static uint64_t ticks_mem(void)
 
 static uint32_t to_us(uint64_t ticks)
 {
-	return ticks * 10 / 192;	/* 19.2 MHz */
+	return ticks / 26;	/* 26 MHz */
 }
 
 void shim_main(uint64_t dtb)
@@ -377,20 +374,11 @@ void shim_main(uint64_t dtb)
 	/* An xnu payload in the ramdisk means: boot it (MMU stays off). */
 	stage = "loader";
 	con_clear(RED);
-	con_str("SHIM", "sweet milestone 4: xnu loader");
+	con_str("SHIM", "s21 stage 1: shim bring-up");
 	con_skip();
 	const char *why = loader_boot(dtb);
 	con_str("LOADER", why);
 	con_skip();
-
-	/* No payload: probe the internal UFS while the MMU is still off. */
-	stage = "ufs";
-	test_ufs();
-	con_skip();
-	/* Keep the probe results on screen (later tests clear it); reset after 3 min. */
-	con_str("UFS", "probe done, reset in ~3 min");
-	delay_ms(180000);
-	reset(20);
 
 	stage = "fill off";
 	uint64_t fill_off = ticks_fill(RED);
@@ -405,7 +393,7 @@ void shim_main(uint64_t dtb)
 	if (rc)
 		con_clear(RED);
 
-	con_str("SHIM", "sweet milestone 3");
+	con_str("SHIM", "s21 stage 1 diagnostics");
 	con_skip();
 	con_hex2("DTB", "at=", dtb, "magic=", dtb ? __builtin_bswap32(rd32(dtb)) : 0);
 	con_hex2("IMAGE", "lo=", mi.img_lo, "hi=", mi.img_hi);
