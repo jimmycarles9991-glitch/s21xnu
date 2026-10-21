@@ -76,7 +76,7 @@
  	}
  	__builtin_arm_dsb(0xf);
  
-@@ -180,20 +207,42 @@
+@@ -180,20 +207,44 @@
  	uint64_t deadline;
  	nanoseconds_to_absolutetime(CMD_TIMEOUT_NS, &deadline);
  	deadline += mach_absolute_time();
@@ -94,6 +94,8 @@
 +		if (now > deadline) {
  			ufs_wr(REG_UTRLCLR, ~1u);
  			printf("SWEET UFS: command 0x%02x timed out\n", cdb[0]);
++			printf("SWEET UFS: DIAG2 is 0x%x hcs 0x%x hce 0x%x doorbell 0x%x ocs 0x%x\n", ufs_rd(REG_IS), ufs_rd(REG_HCS), ufs_rd(REG_HCE), ufs_rd(REG_UTRLDBR), utrd->dw2);
++			printf("SWEET UFS: DIAG2 uec pa 0x%x dl 0x%x n 0x%x t 0x%x dme 0x%x\n", ufs_rd(0x38), ufs_rd(0x3c), ufs_rd(0x40), ufs_rd(0x44), ufs_rd(0x48));
  			return ETIMEDOUT;
  		}
 -		delay(1);
