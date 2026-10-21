@@ -21,11 +21,11 @@ diff --git a/iokit/bsddev/IOKitBSDInit.cpp b/iokit/bsddev/IOKitBSDInit.cpp
 +//	SWEET: root on a GPT partition of the internal UFS (bsd/dev/sweet_ufs.c)
 +//
 +	if (strcmp(rdBootVar, "ufsroot0") == 0) {
-+		extern int sweet_ufs_rootdev(dev_t *dev);
++		extern int sweet_ufs_rootdev(dev_t *dev); extern const char *sweet_ufs_dbg(void);
 +		OSSafeReleaseNULL(matching);
 +		int ufs_error = sweet_ufs_rootdev(root);
 +		if (ufs_error) {
-+			panic("IOFindBSDRoot: SWEET UFS root %s unavailable: %d", rdBootVar, ufs_error);
++			panic("IOFindBSDRoot: SWEET UFS root %s unavailable: %d\n%s", rdBootVar, ufs_error, sweet_ufs_dbg());
 +		}
 +		strlcpy(rootName, rdBootVar, rootNameSize);
 +		IOLog("BSD root: %s, major %d, minor %d\n", rootName, major(*root), minor(*root));
@@ -41,7 +41,7 @@ diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/sweet_ufs.c
-@@ -0,0 +1,2045 @@
+@@ -0,0 +1,2055 @@
 +/*
 + * SWEET internal UFS root device (read-only).
 + *
@@ -1729,6 +1729,15 @@ new file mode 100644
 +#undef u32
 +#undef u64
 +
++static char su_dbg[1100];
++static unsigned su_dbg_n;
++#define SULOG(...) do { printf(__VA_ARGS__); if (su_dbg_n < sizeof(su_dbg) - 120) { snprintf(su_dbg + su_dbg_n, sizeof(su_dbg) - su_dbg_n, __VA_ARGS__); su_dbg_n = (unsigned)strlen(su_dbg); } } while (0)
++const char *sweet_ufs_dbg(void);
++const char *
++sweet_ufs_dbg(void)
++{
++	return su_dbg;
++}
 +static void
 +sweet_cal_udelay(uint32_t us)
 +{
@@ -1769,37 +1778,37 @@ new file mode 100644
 +	vh.udelay = sweet_cal_udelay;
 +	cp.handle = &vh; cp.mclk_rate = mhz * 1000000u; cp.available_lane = 2;
 +	cp.board = BRD_UNIV; cp.tbl = 0; cp.evt_ver = 1; cp.max_gear = 4;
-+	printf("SWEET UFS: b1 mclk %u MHz clkstop 0x%x forcehcs 0x%x\n", mhz, ufs_rd(0x11B0), ufs_rd(0x11B4));
++	SULOG("SWEET UFS: b1 mclk %u MHz clkstop 0x%x forcehcs 0x%x\n", mhz, ufs_rd(0x11B0), ufs_rd(0x11B4));
 +	ufs_wr(REG_HCE, 0);
 +	for (i = 0; i < 1000 && (ufs_rd(REG_HCE) & 1); i++) { delay(10); }
-+	printf("SWEET UFS: b2 config_host\n");
++	SULOG("SWEET UFS: b2 config_host\n");
 +	ufs_config_host(mhz, &vh);
-+	printf("SWEET UFS: b3 device reset\n");
++	SULOG("SWEET UFS: b3 device reset\n");
 +	ufs_wr(0x1170, 0); delay(5); ufs_wr(0x1170, 1); delay(10000);
 +	ufs_wr(REG_HCE, 1);
 +	for (i = 0; i < 1000 && !(ufs_rd(REG_HCE) & 1); i++) { delay(10); }
 +	ufs_wr(0x11B0, 0);
 +	for (i = 0; i < 1000 && !(ufs_rd(REG_HCS) & 8); i++) { delay(100); }
-+	printf("SWEET UFS: b4 hce 0x%x hcs 0x%x clkstop 0x%x txprdt 0x%x\n", ufs_rd(REG_HCE), ufs_rd(REG_HCS), ufs_rd(0x11B0), ufs_rd(0x1100));
++	SULOG("SWEET UFS: b4 hce 0x%x hcs 0x%x clkstop 0x%x txprdt 0x%x\n", ufs_rd(REG_HCE), ufs_rd(REG_HCS), ufs_rd(0x11B0), ufs_rd(0x1100));
 +	for (t = 0; t < 3 && !ok; t++) {
-+		printf("SWEET UFS: b5 pre_link try %d\n", t);
++		SULOG("SWEET UFS: b5 pre_link try %d\n", t);
 +		cr = ufs_cal_pre_link(&cp);
-+		printf("SWEET UFS: pre_link -> %d\n", (int)cr);
++		SULOG("SWEET UFS: pre_link -> %d\n", (int)cr);
 +		ufs_wr(REG_IS, ufs_rd(REG_IS));
 +		ufs_wr(0x94, 0); ufs_wr(0x98, 0); ufs_wr(0x9c, 0);
 +		ufs_wr(0x90, 0x16);
 +		for (i = 0; i < 20000 && !(ufs_rd(REG_IS) & (1u << 10)); i++) { delay(100); }
 +		is = ufs_rd(REG_IS); a2 = ufs_rd(0x98);
-+		printf("SWEET UFS: linkstartup try %d is 0x%x arg2 0x%x hcs 0x%x\n", t, is, a2, ufs_rd(REG_HCS));
-+		printf("SWEET UFS: uec pa 0x%x dl 0x%x n 0x%x t 0x%x dme 0x%x\n", ufs_rd(0x38), ufs_rd(0x3c), ufs_rd(0x40), ufs_rd(0x44), ufs_rd(0x48));
++		SULOG("SWEET UFS: linkstartup try %d is 0x%x arg2 0x%x hcs 0x%x\n", t, is, a2, ufs_rd(REG_HCS));
++		SULOG("SWEET UFS: uec pa 0x%x dl 0x%x n 0x%x t 0x%x dme 0x%x\n", ufs_rd(0x38), ufs_rd(0x3c), ufs_rd(0x40), ufs_rd(0x44), ufs_rd(0x48));
 +		ufs_wr(REG_IS, is);
 +		if ((is & (1u << 10)) && !(a2 & 0xff) && (ufs_rd(REG_HCS) & 1)) { ok = 1; }
 +	}
 +	if (ok) {
-+		printf("SWEET UFS: link UP, tx? 0x%x rx? 0x%x (offsets inferred)\n", unipro_readl(&vh, 0x3184), unipro_readl(&vh, 0x3204));
++		SULOG("SWEET UFS: link UP, tx? 0x%x rx? 0x%x (offsets inferred)\n", unipro_readl(&vh, 0x3184), unipro_readl(&vh, 0x3204));
 +		cp.connected_tx_lane = 2; cp.connected_rx_lane = 2;
 +		cr = ufs_cal_post_link(&cp);
-+		printf("SWEET UFS: post_link -> %d hcs 0x%x\n", (int)cr, ufs_rd(REG_HCS));
++		SULOG("SWEET UFS: post_link -> %d hcs 0x%x\n", (int)cr, ufs_rd(REG_HCS));
 +	}
 +	{ static bool held; if (!held) { held = true; uint64_t w; nanoseconds_to_absolutetime(45000000000ULL, &w); w += mach_absolute_time(); while (mach_absolute_time() < w) { } } }
 +}
@@ -1807,21 +1816,22 @@ new file mode 100644
 +ufs_take_over_host(void)
 +{
 +	uint32_t hce = ufs_rd(REG_HCE), hcs = ufs_rd(REG_HCS);
++	SULOG("SWEET UFS: entry hce 0x%x hcs 0x%x\n", hce, hcs);
 +	if (!(hce & 1)) {
 +		ufs_wr(REG_HCE, 1);
 +		for (int i = 0; i < 200000 && !(ufs_rd(REG_HCE) & 1); i++) { }
 +		hce = ufs_rd(REG_HCE); hcs = ufs_rd(REG_HCS);
-+		printf("SWEET UFS: tried HCE=1 -> hce 0x%x hcs 0x%x\n", hce, hcs);
++		SULOG("SWEET UFS: tried HCE=1 -> hce 0x%x hcs 0x%x\n", hce, hcs);
 +		ufs_link_bringup();
 +		hce = ufs_rd(REG_HCE); hcs = ufs_rd(REG_HCS);
-+		printf("SWEET UFS: after bringup hce 0x%x hcs 0x%x\n", hce, hcs);
++		SULOG("SWEET UFS: after bringup hce 0x%x hcs 0x%x\n", hce, hcs);
 +	}
 +	if (!(hce & 1) || !(hcs & HCS_DP) || !(hcs & HCS_UTRLRDY)) {
-+		printf("SWEET UFS: host not ready (hce 0x%x hcs 0x%x)\n", hce, hcs);
++		SULOG("SWEET UFS: host not ready (hce 0x%x hcs 0x%x)\n", hce, hcs);
 +		return ENXIO;
 +	}
 +	if (ufs_rd(REG_UTRLDBR)) {
-+		printf("SWEET UFS: requests outstanding from the bootloader\n");
++		SULOG("SWEET UFS: requests outstanding from the bootloader\n");
 +		return EBUSY;
 +	}
 +	ufs_wr(REG_IE, 0);                      /* polled operation */
@@ -1834,7 +1844,7 @@ new file mode 100644
 +	/* Never ring a doorbell unless the host uses our list. */
 +	if (ufs_rd(REG_UTRLBA) != (uint32_t)list || ufs_rd(REG_UTRLBAU) != (uint32_t)(list >> 32) ||
 +	    !(ufs_rd(REG_UTRLRSR) & 1)) {
-+		printf("SWEET UFS: host did not take our request list\n");
++		SULOG("SWEET UFS: host did not take our request list\n");
 +		return EIO;
 +	}
 +	return 0;
@@ -2019,7 +2029,7 @@ new file mode 100644
 +	if (SecureDTLookupEntry(NULL, "/sweet-ufs", &node) != kSuccess ||
 +	    SecureDTGetProperty(node, "reg", (void const **)&reg, &size) != kSuccess ||
 +	    size < 2 * sizeof(uintptr_t)) {
-+		printf("SWEET UFS: no /sweet-ufs node in the device tree\n");
++		SULOG("SWEET UFS: no /sweet-ufs node in the device tree\n");
 +		return ENXIO;
 +	}
 +	PE_parse_boot_argn("ufsroot", want, sizeof(want));
@@ -2027,7 +2037,7 @@ new file mode 100644
 +	su.regs = ml_io_map(reg[0], reg[1]);
 +	if (kmem_alloc_contig(kernel_map, &su.dma, DMA_SIZE, PAGE_MASK, 0, 0,
 +	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
-+		printf("SWEET UFS: no contiguous DMA memory\n");
++		SULOG("SWEET UFS: no contiguous DMA memory\n");
 +		return ENOMEM;
 +	}
 +	ppnum_t pn = pmap_find_phys(kernel_pmap, (addr64_t)su.dma);
@@ -2066,7 +2076,7 @@ new file mode 100644
 +	devfs_make_node(su.bdev, DEVFS_BLOCK, UID_ROOT, GID_OPERATOR, 0640, "ufsroot0");
 +	devfs_make_node(makedev(su.cmajor, 0), DEVFS_CHAR, UID_ROOT, GID_OPERATOR, 0640, "rufsroot0");
 +	su.ready = true;
-+	printf("SWEET UFS: \"%s\" on LUN %u: first block 0x%llx, %llu MiB, read-only\n",
++	SULOG("SWEET UFS: \"%s\" on LUN %u: first block 0x%llx, %llu MiB, read-only\n",
 +	    want, su.lun, su.first_block, su.nblocks * UFS_BLOCK >> 20);
 +	return 0;
 +}
