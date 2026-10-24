@@ -1,0 +1,219 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 0bfea14..f8a0beb 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -1975,2 +1975,198 @@ su_disable_peer_lcc(void)
+ 
++/* hsg4 pmc: HS-G4 power-mode change. Port of Linux ufshcd_config_pwr_mode/ufshcd_change_power_mode and the
++ * ufs-e2100 pwr_change_notify. Does nothing unless the ufshs= boot-arg is set (1 = try, 2 = try + verify + force the panic path). */
++#define SU_PA_ACTIVETXDATALANES 0x1560u
++#define SU_PA_TXGEAR 0x1568u
++#define SU_PA_TXTERMINATION 0x1569u
++#define SU_PA_HSSERIES 0x156Au
++#define SU_PA_PWRMODE 0x1571u
++#define SU_PA_ACTIVERXDATALANES 0x1580u
++#define SU_PA_RXGEAR 0x1583u
++#define SU_PA_RXTERMINATION 0x1584u
++#define SU_PA_MAXRXHSGEAR 0x1587u
++#define SU_PA_PWRMODEUSERDATA0 0x15B0u
++#define SU_PA_PWRMODEUSERDATA1 0x15B1u
++#define SU_PA_PWRMODEUSERDATA2 0x15B2u
++#define SU_PA_PWRMODEUSERDATA3 0x15B3u
++#define SU_PA_PWRMODEUSERDATA4 0x15B4u
++#define SU_PA_PWRMODEUSERDATA5 0x15B5u
++#define SU_DME_LocalFC0ProtectionTimeOutVal 0xD041u
++#define SU_DME_LocalTC0ReplayTimeOutVal 0xD042u
++#define SU_DME_LocalAFC0ReqTimeOutVal 0xD043u
++#define SU_DL_FC0ProtectionTimeOutVal_Default 8191u
++#define SU_DL_TC0ReplayTimeOutVal_Default 65535u
++#define SU_DL_AFC0ReqTimeOutVal_Default 32767u
++#define SU_DL_FC1ProtectionTimeOutVal_Default 8191u
++#define SU_DL_TC1ReplayTimeOutVal_Default 65535u
++#define SU_DL_AFC1ReqTimeOutVal_Default 32767u
++
++static struct ufs_cal_param *su_cp;
++static struct uic_pwr_mode su_pmd;
++static uint32_t su_hs_mode;
++
++static enum ufs_cal_errno
++su_cal_pre_pmc(struct ufs_cal_param *p)
++{
++	const struct ufs_cal_phy_cfg *cfg;
++	uint32_t dl_error;
++
++	/* block PA_ERROR_IND_RECEIVED */
++	dl_error = (uint32_t)(unipro_readl(p->handle, UNIP_DL_ERROR_IRQ_MASK) | PA_ERROR_IND_RECEIVED);
++	unipro_writel(p->handle, dl_error, UNIP_DL_ERROR_IRQ_MASK);
++
++	if (p->pmd->mode == SLOW_MODE) {
++		cfg = (p->tbl == HOST_CARD) ? calib_of_pwm_card : calib_of_pwm;
++	} else if (p->pmd->hs_series == PA_HS_MODE_B) {
++		cfg = (p->tbl == HOST_CARD) ? calib_of_hs_rate_b_card : calib_of_hs_rate_b;
++	} else if (p->pmd->hs_series == PA_HS_MODE_A) {
++		cfg = (p->tbl == HOST_CARD) ? calib_of_hs_rate_a_card : calib_of_hs_rate_a;
++	} else {
++		return UFS_CAL_INV_ARG;
++	}
++	return ufs_cal_config_uic(p, cfg, p->pmd);
++}
++
++static enum ufs_cal_errno
++su_cal_post_pmc(struct ufs_cal_param *p)
++{
++	const struct ufs_cal_phy_cfg *cfg;
++
++	if (p->pmd->mode == SLOW_MODE) {
++		cfg = (p->tbl == HOST_CARD) ? post_calib_of_pwm_card : post_calib_of_pwm;
++	} else if (p->pmd->hs_series == PA_HS_MODE_B) {
++		cfg = (p->tbl == HOST_CARD) ? post_calib_of_hs_rate_b_card : post_calib_of_hs_rate_b;
++	} else if (p->pmd->hs_series == PA_HS_MODE_A) {
++		cfg = (p->tbl == HOST_CARD) ? post_calib_of_hs_rate_a_card : post_calib_of_hs_rate_a;
++	} else {
++		return UFS_CAL_INV_ARG;
++	}
++	return ufs_cal_config_uic(p, cfg, p->pmd);
++}
++
++static int
++su_dme_set(uint32_t attr, uint32_t val)
++{
++	/* UIC_CMD_DME_SET 0x02; arg1 = attr << 16 | selector 0, arg2 = ATTR_SET_NOR (0), arg3 = value */
++	return su_uic(0x02, attr << 16, 0, val, NULL);
++}
++
++static int
++su_dme_get(uint32_t attr, uint32_t *val)
++{
++	return su_uic(0x01, attr << 16, 0, 0, val);
++}
++
++static void
++su_try_hs(void)
++{
++	struct ufs_cal_param *p = su_cp;
++	uint32_t v = 0, peer = 0, loc = 0, gear, lanes, pm, hcs, upmcrs, cur = 0;
++	unsigned int i;
++	int e, ep, el;
++	enum ufs_cal_errno cr, cpost = UFS_CAL_NO_ERROR;
++
++	if (!PE_parse_boot_argn("ufshs", &v, sizeof(v)) || !v) {
++		return;
++	}
++	su_hs_mode = v;
++	if (!p) {
++		SULOG("SWEET UFS: hsg4 pmc: no cal param\n");
++		return;
++	}
++	gear = p->max_gear;
++	lanes = (uint32_t)MIN(p->connected_tx_lane, p->connected_rx_lane);
++	lanes = (uint32_t)MIN(lanes, (uint32_t)p->available_lane);
++	ep = su_uic(0x03, SU_PA_MAXRXHSGEAR << 16, 0, 0, &peer);   /* DME_PEER_GET */
++	el = su_uic(0x01, SU_PA_MAXRXHSGEAR << 16, 0, 0, &loc);    /* DME_GET */
++	if (!ep && peer && peer < gear) {
++		gear = peer;
++	}
++	if (!el && loc && loc < gear) {
++		gear = loc;
++	}
++	SULOG("SWEET UFS: hsg4 pmc: max hs gear peer %u (%d) host %u (%d), using G%u L%u\n", peer, ep, loc, el, gear, lanes);
++	if (!gear || !lanes) {
++		return;
++	}
++
++	su_pmd.gear = (uint8_t)gear;
++	su_pmd.lane = (uint8_t)lanes;
++	su_pmd.mode = (uint8_t)FAST_MODE;
++	su_pmd.hs_series = (uint8_t)PA_HS_MODE_B;       /* source marks rate B an ASSUMPTION */
++	p->pmd = &su_pmd;
++
++	cr = su_cal_pre_pmc(p);
++	if (cr != UFS_CAL_NO_ERROR) {
++		SULOG("SWEET UFS: hsg4 pmc: pre cal failed %d, mode not changed\n", (int)cr);
++		return;
++	}
++
++	const struct {
++		uint32_t attr;
++		uint32_t val;
++	} seq[] = {
++		{ SU_PA_RXGEAR, gear },
++		{ SU_PA_ACTIVERXDATALANES, lanes },
++		{ SU_PA_RXTERMINATION, 1 },
++		{ SU_PA_TXGEAR, gear },
++		{ SU_PA_ACTIVETXDATALANES, lanes },
++		{ SU_PA_TXTERMINATION, 1 },
++		{ SU_PA_HSSERIES, (uint32_t)PA_HS_MODE_B },
++		{ SU_PA_PWRMODEUSERDATA0, SU_DL_FC0ProtectionTimeOutVal_Default },
++		{ SU_PA_PWRMODEUSERDATA1, SU_DL_TC0ReplayTimeOutVal_Default },
++		{ SU_PA_PWRMODEUSERDATA2, SU_DL_AFC0ReqTimeOutVal_Default },
++		{ SU_PA_PWRMODEUSERDATA3, SU_DL_FC1ProtectionTimeOutVal_Default },
++		{ SU_PA_PWRMODEUSERDATA4, SU_DL_TC1ReplayTimeOutVal_Default },
++		{ SU_PA_PWRMODEUSERDATA5, SU_DL_AFC1ReqTimeOutVal_Default },
++		{ SU_DME_LocalFC0ProtectionTimeOutVal, SU_DL_FC0ProtectionTimeOutVal_Default },
++		{ SU_DME_LocalTC0ReplayTimeOutVal, SU_DL_TC0ReplayTimeOutVal_Default },
++		{ SU_DME_LocalAFC0ReqTimeOutVal, SU_DL_AFC0ReqTimeOutVal_Default },
++	};
++	for (i = 0; i < sizeof(seq) / sizeof(seq[0]); i++) {
++		e = su_dme_set(seq[i].attr, seq[i].val);
++		if (e) {
++			SULOG("SWEET UFS: hsg4 pmc: DME_SET 0x%x -> %d, mode not changed\n", seq[i].attr, e);
++			return;
++		}
++	}
++
++	pm = (uint32_t)(((uint32_t)FAST_MODE << 4) | (uint32_t)FAST_MODE);
++	ufs_wr(REG_IS, 1u << 4);                        /* clear stale UPMS */
++	e = su_dme_set(SU_PA_PWRMODE, pm);
++	if (!e) {
++		for (i = 0; i < 1000 && !(ufs_rd(REG_IS) & (1u << 4)); i++) {
++			delay(1000);
++		}
++	}
++	hcs = ufs_rd(REG_HCS);
++	upmcrs = (hcs >> 8) & 7;                        /* 1 = PWR_LOCAL = success */
++	ufs_wr(REG_IS, 1u << 4);
++	if (!e && upmcrs == 1) {
++		p->active_tx_lane = (uint8_t)lanes;
++		p->active_rx_lane = (uint8_t)lanes;
++		cpost = su_cal_post_pmc(p);
++	}
++	(void)su_dme_get(SU_PA_PWRMODE, &cur);
++	SULOG("SWEET UFS: hsg4 pmc: pre %d uic %d upmcrs %u post %d PA_PWRMODE 0x%x G%u L%u\n",
++		(int)cr, e, upmcrs, (int)cpost, cur, gear, lanes);
++}
++
++/* ufshs=2: re-read block 0 of the selected partition, log it, then fail on purpose so SULOG reaches the IOFindBSDRoot panic. */
++static int
++su_hs_verify(void)
++{
++	uint32_t pm = 0;
++	int e;
++	const uint32_t *w;
++
++	if (su_hs_mode < 2) {
++		return 0;
++	}
++	(void)su_dme_get(SU_PA_PWRMODE, &pm);
++	e = ufs_read_blocks(su.first_block, 1);
++	w = (const uint32_t *)(su.dma + DMA_BOUNCE);
++	SULOG("SWEET UFS: hsg4 verify PA_PWRMODE 0x%x read %d part0 %08x %08x %08x %08x\n", pm, e, w[0], w[1], w[2], w[3]);
++	return ENXIO;
++}
++
+ static int
+@@ -1992,2 +2188,3 @@ ufs_link_bringup(void)
+ 	cp.handle = &vh;
++	su_cp = &cp;
+ 	cp.mclk_rate = mhz * 1000000u;
+@@ -2099,2 +2296,5 @@ ufs_take_over_host(void)
+ 		error = ufs_device_init();
++		if (!error) {
++			su_try_hs();
++		}
+ 	}
+@@ -2329,2 +2529,5 @@ sweet_ufs_init(void)
+ 		error = ufs_find_partition(want);
++		if (!error) {
++			error = su_hs_verify();
++		}
+ 	}
