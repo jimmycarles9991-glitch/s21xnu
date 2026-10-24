@@ -362,7 +362,7 @@ new file mode 100644
 +		return error;
 +	}
 +	if (memcmp(b, "EFI PART", 8) != 0) {
-+		printf("SWEET UFS: LUN %u has no GPT\n", su.lun);
++		SULOG("SWEET UFS: LUN %u has no GPT\n", su.lun);
 +		return ENXIO;
 +	}
 +	uint64_t entry_lba;
@@ -371,7 +371,7 @@ new file mode 100644
 +	memcpy(&nent, b + 80, 4);
 +	memcpy(&esz, b + 84, 4);
 +	if (esz != 128 || nent == 0 || nent * esz > BOUNCE_SIZE) {
-+		printf("SWEET UFS: unsupported GPT entries %u x %u\n", nent, esz);
++		SULOG("SWEET UFS: unsupported GPT entries %u x %u\n", nent, esz);
 +		return ENXIO;
 +	}
 +	error = ufs_read_blocks(entry_lba, (nent * esz + UFS_BLOCK - 1) / UFS_BLOCK);
@@ -403,7 +403,7 @@ new file mode 100644
 +		su.nblocks = last - first + 1;
 +		return 0;
 +	}
-+	printf("SWEET UFS: no GPT partition named \"%s\"\n", want);
++	SULOG("SWEET UFS: no GPT part \"%s\" in %u entries\n", want, nent);
 +	return ENOENT;
 +}
 +
