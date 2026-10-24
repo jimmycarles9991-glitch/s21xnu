@@ -1,8 +1,8 @@
 diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
-index 0bfea14..f8a0beb 100644
+index 0bfea14..5083002 100644
 --- a/bsd/dev/sweet_ufs.c
 +++ b/bsd/dev/sweet_ufs.c
-@@ -1975,2 +1975,198 @@ su_disable_peer_lcc(void)
+@@ -1975,2 +1975,201 @@ su_disable_peer_lcc(void)
  
 +/* hsg4 pmc: HS-G4 power-mode change. Port of Linux ufshcd_config_pwr_mode/ufshcd_change_power_mode and the
 + * ufs-e2100 pwr_change_notify. Does nothing unless the ufshs= boot-arg is set (1 = try, 2 = try + verify + force the panic path). */
@@ -91,7 +91,7 @@ index 0bfea14..f8a0beb 100644
 +su_try_hs(void)
 +{
 +	struct ufs_cal_param *p = su_cp;
-+	uint32_t v = 0, peer = 0, loc = 0, gear, lanes, pm, hcs, upmcrs, cur = 0;
++	uint32_t v = 0, peer = 0, loc = 0, gear, lanes, pm, hcs, upmcrs, cur = 0, softfail = 0;
 +	unsigned int i;
 +	int e, ep, el;
 +	enum ufs_cal_errno cr, cpost = UFS_CAL_NO_ERROR;
@@ -155,9 +155,12 @@ index 0bfea14..f8a0beb 100644
 +	};
 +	for (i = 0; i < sizeof(seq) / sizeof(seq[0]); i++) {
 +		e = su_dme_set(seq[i].attr, seq[i].val);
-+		if (e) {
++		if (e && i < 7) {
 +			SULOG("SWEET UFS: hsg4 pmc: DME_SET 0x%x -> %d, mode not changed\n", seq[i].attr, e);
 +			return;
++		}
++		if (e) {
++			softfail |= 1u << i;    /* Linux ignores these results; Local* are read-only (UIC result 3) here */
 +		}
 +	}
 +
@@ -178,8 +181,8 @@ index 0bfea14..f8a0beb 100644
 +		cpost = su_cal_post_pmc(p);
 +	}
 +	(void)su_dme_get(SU_PA_PWRMODE, &cur);
-+	SULOG("SWEET UFS: hsg4 pmc: pre %d uic %d upmcrs %u post %d PA_PWRMODE 0x%x G%u L%u\n",
-+		(int)cr, e, upmcrs, (int)cpost, cur, gear, lanes);
++	SULOG("SWEET UFS: hsg4 pmc: v2 pre %d uic %d upmcrs %u post %d PA_PWRMODE 0x%x G%u L%u soft 0x%x\n",
++		(int)cr, e, upmcrs, (int)cpost, cur, gear, lanes, softfail);
 +}
 +
 +/* ufshs=2: re-read block 0 of the selected partition, log it, then fail on purpose so SULOG reaches the IOFindBSDRoot panic. */
@@ -201,17 +204,17 @@ index 0bfea14..f8a0beb 100644
 +}
 +
  static int
-@@ -1992,2 +2188,3 @@ ufs_link_bringup(void)
+@@ -1992,2 +2191,3 @@ ufs_link_bringup(void)
  	cp.handle = &vh;
 +	su_cp = &cp;
  	cp.mclk_rate = mhz * 1000000u;
-@@ -2099,2 +2296,5 @@ ufs_take_over_host(void)
+@@ -2099,2 +2299,5 @@ ufs_take_over_host(void)
  		error = ufs_device_init();
 +		if (!error) {
 +			su_try_hs();
 +		}
  	}
-@@ -2329,2 +2529,5 @@ sweet_ufs_init(void)
+@@ -2329,2 +2532,5 @@ sweet_ufs_init(void)
  		error = ufs_find_partition(want);
 +		if (!error) {
 +			error = su_hs_verify();
