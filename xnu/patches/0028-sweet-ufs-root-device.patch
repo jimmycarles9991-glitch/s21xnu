@@ -41,7 +41,7 @@ diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/sweet_ufs.c
-@@ -0,0 +1,2349 @@
+@@ -0,0 +1,2390 @@
 +/*
 + * SWEET internal UFS root device (read-only), Samsung Exynos 2100 (S21).
 + *
@@ -337,6 +337,9 @@ new file mode 100644
 +	}
 +	return 0;
 +}
++
++static uint32_t su_ext[3 * 4096];
++static unsigned int su_next;
 +
 +/* READ(10) of count device blocks at lba into the bounce buffer. */
 +static int
@@ -2189,8 +2192,24 @@ new file mode 100644
 +		uint64_t lba = pos / UFS_BLOCK;
 +		uint32_t skip = (uint32_t)(pos % UFS_BLOCK);
 +		uint32_t want = MIN(count - done, BOUNCE_SIZE - skip);
++		uint64_t pb = su.first_block + lba;
++		if (su_next) {
++			unsigned int xi = 0;
++			while (xi < su_next && lba >= (uint64_t)su_ext[3 * xi] + su_ext[3 * xi + 2]) {
++				xi++;
++			}
++			if (xi == su_next) {
++				error = EINVAL;
++				break;
++			}
++			uint64_t room = ((uint64_t)su_ext[3 * xi] + su_ext[3 * xi + 2] - lba) * UFS_BLOCK - skip;
++			if (want > room) {
++				want = (uint32_t)room;
++			}
++			pb = su.first_block + su_ext[3 * xi + 1] + (lba - su_ext[3 * xi]);
++		}
 +		uint32_t blocks = (skip + want + UFS_BLOCK - 1) / UFS_BLOCK;
-+		error = ufs_read_blocks(su.first_block + lba, blocks);
++		error = ufs_read_blocks(pb, blocks);
 +		if (error) {
 +			break;
 +		}
@@ -2358,6 +2377,28 @@ new file mode 100644
 +		return error;
 +	}
 +
++	{
++		const uint32_t *mp = NULL;
++		unsigned int msz = 0;
++		if (SecureDTGetProperty(node, "ufsmap", (void const **)&mp, &msz) == kSuccess) {
++			uint64_t tot = 0;
++			if (msz < 12 || msz % 12 || msz > sizeof(su_ext)) {
++				SULOG("SWEET UFS: bad ufsmap size %u\n", msz);
++				return EINVAL;
++			}
++			memcpy(su_ext, mp, msz);
++			for (unsigned int xi = 0; xi < msz / 12; xi++) {
++				if (su_ext[3 * xi] != tot) {
++					SULOG("SWEET UFS: ufsmap gap at %u\n", xi);
++					return EINVAL;
++				}
++				tot += su_ext[3 * xi + 2];
++			}
++			su_next = msz / 12;
++			su.nblocks = tot;
++			SULOG("SWEET UFS: ufsmap %u extents, %llu blocks\n", su_next, tot);
++		}
++	}
 +	su.bmajor = bdevsw_add(-1, &sweet_ufs_bdevsw);
 +	if (su.bmajor < 0) {
 +		return ENXIO;

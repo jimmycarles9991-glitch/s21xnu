@@ -32,7 +32,7 @@ FB, FB_SIZE = 0xfa000000, 0x1400000
 SWEET_ECID = 0x5357454554000001  # 'SWEET' + 1, synthetic
 FB_W, FB_H, FB_STRIDE = 1080, 2400, 1080 * 4
 # Internal UFS host (ufshc@1d84000 "ufs_mem"); QEMU virt has none
-UFS, UFS_SIZE = 0x01d84000, 0x3000
+UFS, UFS_SIZE = 0x13100000, 0x2000
 TIMEBASE = 26000000
 VTIMER_INTID = 27
 # QEMU virt (-M virt,gic-version=3 -cpu cortex-a76): GICD/GICR and the generic timer's CNTFRQ
@@ -202,7 +202,7 @@ def build(seed=None, qemu=False, highmem=False):
         ph(),
         ('compatible', cstr('qcom,ufshc')),
         ('reg', u64(UFS, UFS_SIZE)),
-    ])
+    ] + ([('ufsmap', open(os.environ['UFSMAP'], 'rb').read())] if os.environ.get('UFSMAP') else []))
 
     # pmap_compute_max_asids requires the node even when no overrides are set.
     # An absent pmap-max-asids property selects XNU's own MAX_ASIDS default.
@@ -238,7 +238,7 @@ def build(seed=None, qemu=False, highmem=False):
         ('manufacturer', cstr('Apple Inc.')),
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
-    ], [chosen, defaults, cpus, arm_io, fbcon, buttons, pram] + product + [])
+    ], [chosen, defaults, cpus, arm_io, fbcon, ufs, buttons, pram] + product + [])
 
 
 if __name__ == '__main__':
