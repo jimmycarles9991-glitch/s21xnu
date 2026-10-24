@@ -108,7 +108,7 @@ new file mode 100644
 +struct utrd {
 +	uint32_t dw0, dw1, dw2, dw3;
 +	uint32_t ucdba, ucdbau;
-+	uint32_t resp;          /* [31:16] response UPIU offset, [15:0] length, DWORDs */
++	uint32_t resp;          /* [31:16] response UPIU offset, [15:0] length, BYTES (PRDT_BYTE_GRAN) */
 +	uint32_t prdt;          /* [31:16] PRDT offset (DWORDs), [15:0] entries */
 +};
 +
@@ -206,7 +206,7 @@ new file mode 100644
 +	utrd->dw2 = 0x0f;                       /* OCS invalid until updated */
 +	utrd->ucdba = (uint32_t)ucd_pa;
 +	utrd->ucdbau = (uint32_t)(ucd_pa >> 32);
-+	utrd->resp = (512u / 4) << 16 | (512u / 4);
++	utrd->resp = (512u << 16) | 512u;      /* PRDT_BYTE_GRAN: bytes */
 +	for (uint32_t i = 0; i < n; i++) {
 +		uint32_t *e = (uint32_t *)(void *)(ucd->prdt + i * PRDT_ENT);
 +		uint64_t pa = bounce_pa + (uint64_t)i * PRDT_CHUNK;
@@ -216,7 +216,7 @@ new file mode 100644
 +		e[3] = MIN(PRDT_CHUNK, datalen - i * PRDT_CHUNK) - 1;
 +	}
 +	if (n) {
-+		utrd->prdt = (UCD_PRDT_OFF / 4) << 16 | prdt_bytes;
++		utrd->prdt = (UCD_PRDT_OFF << 16) | prdt_bytes;
 +	}
 +
 +	uint32_t nx = ufs_rd(SU_NEXUS_UTRL);
@@ -302,7 +302,7 @@ new file mode 100644
 +	}
 +	const uint8_t *r = ufs_resp();
 +	if (r[0] != 0x20) {
-+		SULOG("SWEET UFS: nop resp upiu 0x%x resp 0x%x\n", r[0], r[6]);
++		SULOG("SWEET UFS: nop resp upiu 0x%x resp 0x%x at128 0x%x\n", r[0], r[6], r[-384]);
 +		return EIO;
 +	}
 +	return 0;
