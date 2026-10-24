@@ -308,8 +308,8 @@ new file mode 100644
 +	return 0;
 +}
 +
-+#define SU_QOP_READ_FLAG        0x06
-+#define SU_QOP_SET_FLAG         0x07
++#define SU_QOP_READ_FLAG        0x05
++#define SU_QOP_SET_FLAG         0x06
 +#define SU_FLAG_DEVICE_INIT     0x01
 +
 +/* Query UPIU on a flag IDN (JESD220 query request/response, 32 bytes). */
