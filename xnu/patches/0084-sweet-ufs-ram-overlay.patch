@@ -1,0 +1,224 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 5083002..396f5e2 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -96,6 +96,19 @@ static struct {
+ static LCK_GRP_DECLARE(sweet_ufs_grp, "sweet_ufs");
+ static LCK_MTX_DECLARE(sweet_ufs_lock, &sweet_ufs_grp);
+ 
++/* ufsov: RAM overlay state (see su_ov_setup) */
++#define SU_OV_CHUNK     (1u << 20)
++#define SU_OV_PAGES     (SU_OV_CHUNK / UFS_BLOCK)
++#define SU_OV_MAXCHUNKS 512u
++#define SU_OV_MAXBLOCKS (1u << 21)
++static bool su_ov_on;
++static bool su_ov_full_said;
++static uint32_t *su_ov_dir;
++static uint32_t su_ov_nblk;
++static uint32_t su_ov_used, su_ov_cap, su_ov_nchunk;
++static vm_offset_t su_ov_chunk[SU_OV_MAXCHUNKS];
++
++
+ static inline uint32_t
+ ufs_rd(uint32_t off)
+ {
+@@ -2310,7 +2323,7 @@ sweet_ufs_open(__unused dev_t dev, int flags, __unused int devtype, __unused str
+ 	if (!su.ready) {
+ 		return ENXIO;
+ 	}
+-	return (flags & FWRITE) ? EROFS : 0;
++	return ((flags & FWRITE) && !su_ov_on) ? EROFS : 0;
+ }
+ 
+ static int
+@@ -2319,6 +2332,123 @@ sweet_ufs_close(__unused dev_t dev, __unused int flags, __unused int devtype, __
+ 	return 0;
+ }
+ 
++/* ufsov: RAM overlay. With boot-arg ufsov=1 the root device accepts writes, but they only go
++ * to RAM: this driver has no UFS write command, so nothing reaches the disk. Reads see the
++ * overlay first. All of it is lost at reboot. ufsovmb=N sets the size (default 64 MiB). */
++static void
++su_ov_setup(void)
++{
++	uint32_t on = 0, mb = 64;
++	vm_offset_t a = 0;
++	vm_size_t dsz;
++
++	if (!PE_parse_boot_argn("ufsov", &on, sizeof(on)) || !on) {
++		return;
++	}
++	PE_parse_boot_argn("ufsovmb", &mb, sizeof(mb));
++	if (mb < 8) {
++		mb = 8;
++	}
++	if (mb > SU_OV_MAXCHUNKS) {
++		mb = SU_OV_MAXCHUNKS;
++	}
++	if (!su.nblocks || su.nblocks > SU_OV_MAXBLOCKS) {
++		SULOG("SWEET UFS: ufsov: device too large for the overlay directory (%llu blocks)\n",
++			(unsigned long long)su.nblocks);
++		return;
++	}
++	dsz = ((vm_size_t)su.nblocks * sizeof(uint32_t) + (vm_size_t)PAGE_MASK) & ~(vm_size_t)PAGE_MASK;
++	if (kmem_alloc_contig(kernel_map, &a, dsz, PAGE_MASK, 0, 0,
++		KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
++		SULOG("SWEET UFS: ufsov: no memory for the overlay directory\n");
++		return;
++	}
++	su_ov_dir = (uint32_t *)a;
++	for (uint32_t i = 0; i < mb; i++) {
++		a = 0;
++		if (kmem_alloc_contig(kernel_map, &a, SU_OV_CHUNK, PAGE_MASK, 0, 0,
++			KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
++			break;
++		}
++		su_ov_chunk[su_ov_nchunk++] = a;
++	}
++	if (!su_ov_nchunk) {
++		SULOG("SWEET UFS: ufsov: no memory for the overlay pages\n");
++		su_ov_dir = NULL;
++		return;
++	}
++	su_ov_cap = su_ov_nchunk * SU_OV_PAGES;
++	su_ov_nblk = (uint32_t)su.nblocks;
++	su_ov_on = true;
++	SULOG("SWEET UFS: ufsov: RAM overlay on, %u MiB, %u blocks, writes never reach the disk\n",
++		su_ov_nchunk, su_ov_nblk);
++}
++
++static uint8_t *
++su_ov_page(uint32_t idx)
++{
++	idx--;
++	return (uint8_t *)(su_ov_chunk[idx / SU_OV_PAGES] + (vm_offset_t)(idx % SU_OV_PAGES) * UFS_BLOCK);
++}
++
++/* Copy overlaid 4 KiB blocks over data just read from the device. */
++static void
++su_ov_patch_read(caddr_t dst, uint64_t lba, uint32_t skip, uint32_t want)
++{
++	uint32_t blocks = (skip + want + UFS_BLOCK - 1) / UFS_BLOCK;
++
++	if (lba + blocks > su_ov_nblk) {
++		return;
++	}
++	for (uint32_t i = 0; i < blocks; i++) {
++		uint32_t idx = su_ov_dir[lba + i];
++		uint32_t lo = (i == 0) ? skip : 0;
++		uint32_t hi = (i == blocks - 1) ? (skip + want - i * UFS_BLOCK) : UFS_BLOCK;
++
++		if (idx) {
++			memcpy(dst + (i * UFS_BLOCK + lo - skip), su_ov_page(idx) + lo, hi - lo);
++		}
++	}
++}
++
++/* Store a write into the overlay. pb is the physical block of the first block (for partial blocks). */
++static int
++su_ov_write(caddr_t src, uint64_t lba, uint32_t skip, uint32_t want, uint64_t pb)
++{
++	uint32_t blocks = (skip + want + UFS_BLOCK - 1) / UFS_BLOCK;
++	int error;
++
++	if (lba + blocks > su_ov_nblk) {
++		return EINVAL;
++	}
++	for (uint32_t i = 0; i < blocks; i++) {
++		uint32_t idx = su_ov_dir[lba + i];
++		uint32_t lo = (i == 0) ? skip : 0;
++		uint32_t hi = (i == blocks - 1) ? (skip + want - i * UFS_BLOCK) : UFS_BLOCK;
++
++		if (!idx) {
++			if (su_ov_used >= su_ov_cap) {
++				if (!su_ov_full_said) {
++					su_ov_full_said = true;
++					SULOG("SWEET UFS: ufsov: overlay full (%u pages), failing writes\n", su_ov_cap);
++				}
++				return ENOSPC;
++			}
++			if (lo != 0 || hi != UFS_BLOCK) {
++				error = ufs_read_blocks(pb + i, 1);
++				if (error) {
++					return error;
++				}
++				memcpy(su_ov_page(su_ov_used + 1), (const void *)(su.dma + DMA_BOUNCE), UFS_BLOCK);
++			}
++			idx = ++su_ov_used;
++			su_ov_dir[lba + i] = idx;
++		}
++		memcpy(su_ov_page(idx) + lo, src + (i * UFS_BLOCK + lo - skip), hi - lo);
++	}
++	return 0;
++}
++
+ static void
+ sweet_ufs_strategy(buf_t bp)
+ {
+@@ -2329,7 +2459,7 @@ sweet_ufs_strategy(buf_t bp)
+ 	uint64_t part_bytes = su.nblocks * UFS_BLOCK;
+ 
+ 	buf_setresid(bp, count);
+-	if (!(buf_flags(bp) & B_READ)) {
++	if (!(buf_flags(bp) & B_READ) && !su_ov_on) {
+ 		error = EROFS;
+ 		goto done;
+ 	}
+@@ -2367,12 +2497,24 @@ sweet_ufs_strategy(buf_t bp)
+ 			}
+ 			pb = su.first_block + su_ext[3 * xi + 1] + (lba - su_ext[3 * xi]);
+ 		}
++		if (!(buf_flags(bp) & B_READ)) {
++			error = su_ov_write(vaddr + done, lba, skip, want, pb);
++			if (error) {
++				break;
++			}
++			done += want;
++			buf_setresid(bp, count - done);
++			continue;
++		}
+ 		uint32_t blocks = (skip + want + UFS_BLOCK - 1) / UFS_BLOCK;
+ 		error = ufs_read_blocks(pb, blocks);
+ 		if (error) {
+ 			break;
+ 		}
+ 		memcpy(vaddr + done, (const void *)(su.dma + DMA_BOUNCE + skip), want);
++		if (su_ov_on) {
++			su_ov_patch_read(vaddr + done, lba, skip, want);
++		}
+ 		done += want;
+ 		buf_setresid(bp, count - done);
+ 	}
+@@ -2413,18 +2555,22 @@ sweet_ufs_ioctl(__unused dev_t dev, u_long cmd, caddr_t data, __unused int flag,
+ 		*o = su.nblocks * UFS_BLOCK / su.secsize;
+ 		return 0;
+ 	case DKIOCISWRITABLE:
+-		*f = 0;
++		*f = su_ov_on ? 1 : 0;
+ 		return 0;
+ 	case DKIOCGETMAXBLOCKCOUNTREAD:
+ 		*o = BOUNCE_SIZE / su.secsize;
+ 		return 0;
+ 	case DKIOCGETMAXBLOCKCOUNTWRITE:
+-		*o = 0;
++		*o = su_ov_on ? (uint64_t)(BOUNCE_SIZE / su.secsize) : 0;
+ 		return 0;
+ 	case DKIOCGETMAXSEGMENTCOUNTREAD:
+ 	case DKIOCGETMAXSEGMENTCOUNTWRITE:
+ 		*o = 1;
+ 		return 0;
++#ifdef DKIOCSYNCHRONIZE
++	case DKIOCSYNCHRONIZE:
++		return su_ov_on ? 0 : ENOTTY;
++#endif
+ 	default:
+ 		return ENOTTY;
+ 	}
+@@ -2561,6 +2707,7 @@ sweet_ufs_init(void)
+ 			SULOG("SWEET UFS: ufsmap %u extents, %llu blocks\n", su_next, tot);
+ 		}
+ 	}
++	su_ov_setup();
+ 	su.bmajor = bdevsw_add(-1, &sweet_ufs_bdevsw);
+ 	if (su.bmajor < 0) {
+ 		return ENXIO;
