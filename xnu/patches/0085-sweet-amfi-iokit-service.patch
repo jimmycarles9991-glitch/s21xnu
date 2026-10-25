@@ -1,0 +1,117 @@
+diff --git a/iokit/Kernel/arm/SweetAMFI.cpp b/iokit/Kernel/arm/SweetAMFI.cpp
+new file mode 100644
+index 0000000..23549bb
+--- /dev/null
++++ b/iokit/Kernel/arm/SweetAMFI.cpp
+@@ -0,0 +1,91 @@
++/*
++ * Built-in AppleMobileFileIntegrity IOKit service for SWEET.
++ *
++ * launchd_cache_loader (iOS 16.7) opens IOServiceMatching("AppleMobileFileIntegrity")
++ * with type 0 and calls selector 6 with one scalar (1) and a structure (the cdhash,
++ * by inspection of the disassembly, not confirmed). Return 0 means "trusted".
++ * There is no trust cache here, so every cdhash is reported trusted.
++ * Every call is logged; unknown selectors fail with kIOReturnUnsupported.
++ */
++#include <pexpert/arm64/board_config.h>
++
++#if defined(SWEET)
++#include <IOKit/IOService.h>
++#include <IOKit/IOUserClient.h>
++#include <IOKit/IOKitKeys.h>
++#include <IOKit/IOLib.h>
++#include <IOKit/IOMemoryDescriptor.h>
++#include <sys/proc.h>
++
++#define SWEET_AMFI_SEL_CHECK_CDHASH 6
++
++class AppleMobileFileIntegrity : public IOService {
++	OSDeclareDefaultStructors(AppleMobileFileIntegrity);
++
++public:
++	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(AppleMobileFileIntegrity, IOService);
++
++bool
++AppleMobileFileIntegrity::start(IOService *provider)
++{
++	if (!IOService::start(provider)) {
++		return false;
++	}
++	setProperty(kIOUserClientClassKey, "AppleMobileFileIntegrityUserClient");
++	registerService();
++	IOLog("SWEET AMFIKIT: AppleMobileFileIntegrity registered (every cdhash trusted)\n");
++	return true;
++}
++
++class AppleMobileFileIntegrityUserClient : public IOUserClient {
++	OSDeclareDefaultStructors(AppleMobileFileIntegrityUserClient);
++
++public:
++	IOReturn clientClose(void) APPLE_KEXT_OVERRIDE;
++	IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments *args,
++		IOExternalMethodDispatch *dispatch, OSObject *target,
++		void *reference) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(AppleMobileFileIntegrityUserClient, IOUserClient);
++
++IOReturn
++AppleMobileFileIntegrityUserClient::clientClose(void)
++{
++	terminate();
++	return kIOReturnSuccess;
++}
++
++IOReturn
++AppleMobileFileIntegrityUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments *args,
++	__unused IOExternalMethodDispatch *dispatch, __unused OSObject *target,
++	__unused void *reference)
++{
++	IOReturn ret = kIOReturnSuccess;
++	uint32_t in_scalars = args->scalarInputCount;
++	uint32_t in_struct = args->structureInputDescriptor != NULL ?
++		(uint32_t)args->structureInputDescriptor->getLength() : args->structureInputSize;
++	uint32_t out_scalars = args->scalarOutputCount;
++	uint32_t out_struct = args->structureOutputDescriptor != NULL ?
++		(uint32_t)args->structureOutputDescriptor->getLength() : args->structureOutputSize;
++	uint64_t arg0 = in_scalars > 0 ? args->scalarInput[0] : 0;
++
++	switch (selector) {
++	case SWEET_AMFI_SEL_CHECK_CDHASH:
++		args->scalarOutputCount = 0;
++		break;
++	default:
++		ret = kIOReturnUnsupported;
++		break;
++	}
++
++	char name[32];
++	proc_selfname(name, sizeof(name));
++	IOLog("SWEET AMFIKIT: %s sel %u arg0 %llu in %u/%u out %u/%u -> 0x%x\n", name, selector,
++		arg0, in_scalars, in_struct, out_scalars, out_struct, ret);
++	return ret;
++}
++#endif /* SWEET */
+diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
+index 92f3e26..b586b48 100644
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -55,2 +55,7 @@ const char * gIOKernelConfigTables =
+     "   {"
++    "     'IOClass'         = AppleMobileFileIntegrity;"
++    "     'IOProviderClass' = IOResources;"
++    "     'IOMatchCategory' = AppleMobileFileIntegrity;"
++    "   },"
++    "   {"
+     "     'IOClass'         = IOWatchdog;"
+diff --git a/iokit/conf/files.arm64 b/iokit/conf/files.arm64
+index acc9ae0..ff9cbed 100644
+--- a/iokit/conf/files.arm64
++++ b/iokit/conf/files.arm64
+@@ -14,2 +14,3 @@ iokit/Kernel/arm/SweetEntitlements.cpp                           optional iokitc
+ iokit/Kernel/arm/SweetKeyStore.cpp                               optional iokitcpp
++iokit/Kernel/arm/SweetAMFI.cpp                                   optional iokitcpp
+ iokit/Kernel/arm/SweetWatchdog.cpp                               optional iokitcpp
