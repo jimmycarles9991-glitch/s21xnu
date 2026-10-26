@@ -1,0 +1,46 @@
+diff --git a/iokit/Kernel/IOUserClient.cpp b/iokit/Kernel/IOUserClient.cpp
+--- a/iokit/Kernel/IOUserClient.cpp
++++ b/iokit/Kernel/IOUserClient.cpp
+@@ -2650,7 +2650,41 @@
+ 	if (ser != NULL && dict != NULL && dict->serialize(ser)) {
+ 		text = ser->text();
+ 	}
+-	IOLog("IOK %s: %s %.240s -> %s\n", name, what, text, result);
++	{
++		/* Show each distinct line 3 times, then drop repeats and refund the budget. */
++		static uint32_t seen_hash[64];
++		static uint16_t seen_cnt[64];
++		static uint32_t seen_n;
++		static uint32_t suppressed;
++		char key[300];
++		uint32_t h = 2166136261u;
++		uint32_t i;
++		snprintf(key, sizeof(key), "%s|%s|%.240s|%s", name, what, text, result);
++		for (const char *p = key; *p; p++) {
++			h = (h ^ (uint8_t)*p) * 16777619u;
++		}
++		for (i = 0; i < seen_n; i++) {
++			if (seen_hash[i] == h) {
++				break;
++			}
++		}
++		if (i == seen_n && seen_n < 64) {
++			seen_hash[seen_n] = h;
++			seen_cnt[seen_n] = 0;
++			seen_n++;
++		}
++		if (i < seen_n && seen_cnt[i] < 60000 && ++seen_cnt[i] > 3) {
++			if (sweet_iolog_lines > 0) {
++				sweet_iolog_lines--;
++			}
++			if ((++suppressed % 200) == 0) {
++				IOLog("IOK %s: (%u repeated matching lines suppressed)\n", name, suppressed);
++			}
++			OSSafeReleaseNULL(ser);
++			return;
++		}
++	}
++	IOLog("IOK %s: %s %.240s -> %s\n", name, what, text, result);
+ 	OSSafeReleaseNULL(ser);
+ }
+ #endif
