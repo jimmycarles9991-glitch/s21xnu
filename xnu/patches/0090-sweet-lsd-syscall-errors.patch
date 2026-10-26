@@ -1,0 +1,16 @@
+--- a/bsd/dev/arm/systemcalls.c	2026-10-26 23:32:12.255416195 +0000
++++ b/bsd/dev/arm/systemcalls.c	2026-10-26 23:32:12.255467445 +0000
+@@ -180,6 +180,13 @@
+ 	AUDIT_SYSCALL_ENTER(code, proc, uthread);
+ 	error = (*(callp->sy_call))(proc, &uthread->uu_arg[0], &(uthread->uu_rval[0]));
+ 	AUDIT_SYSCALL_EXIT(code, proc, uthread, error);
++	if (error > 0 && error != 2 && strncmp(proc->p_comm, "lsd", 4) == 0) {
++		static int sweet_lsderr_n;
++		if (sweet_lsderr_n < 60) {
++			sweet_lsderr_n++;
++			printf("SWEET LSDERR: sc %d errno %d a0 0x%llx\n", code, error, (unsigned long long)uthread->uu_arg[0]);
++		}
++	}
+ 
+ #if CONFIG_MACF
+ skip_syscall:
