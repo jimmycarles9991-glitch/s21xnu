@@ -1,14 +1,19 @@
---- a/bsd/dev/arm/systemcalls.c	2026-10-26 23:32:12.255416195 +0000
-+++ b/bsd/dev/arm/systemcalls.c	2026-10-26 23:32:12.255467445 +0000
-@@ -180,6 +180,13 @@
+--- a/bsd/dev/arm/systemcalls.c	2026-10-26 23:47:05.480936258 +0000
++++ b/bsd/dev/arm/systemcalls.c	2026-10-26 23:47:05.480994868 +0000
+@@ -180,6 +180,18 @@
  	AUDIT_SYSCALL_ENTER(code, proc, uthread);
  	error = (*(callp->sy_call))(proc, &uthread->uu_arg[0], &(uthread->uu_rval[0]));
  	AUDIT_SYSCALL_EXIT(code, proc, uthread, error);
-+	if (error > 0 && error != 2 && strncmp(proc->p_comm, "lsd", 4) == 0) {
++	if (error > 0 && error != 2 && error != 22 && error != 34 && error != 45 && error != 93 && error != 103 && strncmp(proc->p_comm, "lsd", 4) == 0) {
 +		static int sweet_lsderr_n;
-+		if (sweet_lsderr_n < 60) {
++		if (sweet_lsderr_n < 80) {
++			char pb[96]; vm_size_t pl = 0; uint64_t pa = 0;
 +			sweet_lsderr_n++;
-+			printf("SWEET LSDERR: sc %d errno %d a0 0x%llx\n", code, error, (unsigned long long)uthread->uu_arg[0]);
++			pb[0] = 0;
++			if (code == 5 || code == 216 || code == 398 || code == 128 || code == 136 || code == 10) pa = uthread->uu_arg[0];
++			else if (code == 463 || code == 464) pa = uthread->uu_arg[1];
++			if (pa) { (void)copyinstr((user_addr_t)pa, pb, sizeof(pb), &pl); pb[sizeof(pb) - 1] = 0; }
++			printf("SWEET LSDERR2: sc %d errno %d a0 0x%llx %s\n", code, error, (unsigned long long)uthread->uu_arg[0], pb);
 +		}
 +	}
  
