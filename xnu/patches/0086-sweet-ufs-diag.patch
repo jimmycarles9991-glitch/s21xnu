@@ -1,0 +1,139 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 396f5e2..51a66e8 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -2391,6 +2391,118 @@ su_ov_page(uint32_t idx)
+ 	return (uint8_t *)(su_ov_chunk[idx / SU_OV_PAGES] + (vm_offset_t)(idx % SU_OV_PAGES) * UFS_BLOCK);
+ }
+ 
++/* ufsdiag86: boot-arg ufsdiag=1 logs, ufsdiag=2 also panics on the first write error.
++ * ufsdglba=N picks the 4 KiB device block to watch (default 148432 = HFS catalog node 3766 of
++ * the trimmed iOS root). Log only; no UFS command is issued from here. */
++static int su_dg_mode = -1;
++static uint32_t su_dg_lba = 148432;
++static uint32_t su_dg_tlines, su_dg_elines, su_dg_fill, su_dg_nr, su_dg_nw;
++
++static void
++su_dg_init(void)
++{
++	uint32_t v = 0;
++
++	su_dg_mode = 0;
++	if (PE_parse_boot_argn("ufsdiag", &v, sizeof(v))) {
++		su_dg_mode = (int)v;
++	}
++	v = 0;
++	if (PE_parse_boot_argn("ufsdglba", &v, sizeof(v)) && v) {
++		su_dg_lba = v;
++	}
++	if (su_dg_mode) {
++		SULOG("SWEET UFS: ufsdiag86 on, mode %d, watch block %u, overlay %s, %u/%u pages\n",
++			su_dg_mode, su_dg_lba, su_ov_on ? "on" : "off", su_ov_used, su_ov_cap);
++	}
++}
++
++static void
++su_dg_w(uint64_t lba, uint32_t skip, uint32_t want, int error)
++{
++	static const uint32_t th[4] = { 25, 50, 75, 90 };
++	uint32_t nb = (skip + want + UFS_BLOCK - 1) / UFS_BLOCK;
++
++	if (su_dg_mode < 0) {
++		su_dg_init();
++	}
++	if (!su_dg_mode) {
++		return;
++	}
++	su_dg_nw++;
++	if (error) {
++		if (su_dg_elines < 6) {
++			su_dg_elines++;
++			SULOG("SWEET UFS: ufsdiag86 W err %d lba %llu nblk %u want %u ov %u/%u after %u rd %u wr\n",
++				error, (unsigned long long)lba, nb, want, su_ov_used, su_ov_cap, su_dg_nr, su_dg_nw);
++		}
++		if (su_dg_mode >= 2) {
++			panic("ufsdiag86: first write error %d lba %llu want %u ov %u/%u rd %u wr %u",
++				error, (unsigned long long)lba, want, su_ov_used, su_ov_cap, su_dg_nr, su_dg_nw);
++		}
++	}
++	if (su_dg_lba >= lba && su_dg_lba < lba + nb && su_dg_tlines < 12) {
++		su_dg_tlines++;
++		SULOG("SWEET UFS: ufsdiag86 W watch lba %llu nblk %u err %d\n",
++			(unsigned long long)lba, nb, error);
++	}
++	if (su_ov_cap && su_dg_fill < 4) {
++		uint32_t pct = (uint32_t)(((uint64_t)su_ov_used * 100) / su_ov_cap);
++
++		if (pct >= th[su_dg_fill]) {
++			SULOG("SWEET UFS: ufsdiag86 overlay %u%% full (%u/%u pages) after %u rd %u wr\n",
++				pct, su_ov_used, su_ov_cap, su_dg_nr, su_dg_nw);
++			while (su_dg_fill < 4 && pct >= th[su_dg_fill]) {
++				su_dg_fill++;
++			}
++		}
++	}
++}
++
++/* Called after a read request has been copied (and overlay-patched) into dst. */
++static void
++su_dg_r(caddr_t dst, uint64_t lba, uint32_t skip, uint32_t want)
++{
++	uint32_t nb = (skip + want + UFS_BLOCK - 1) / UFS_BLOCK;
++	uint64_t t;
++
++	if (su_dg_mode < 0) {
++		su_dg_init();
++	}
++	if (!su_dg_mode) {
++		return;
++	}
++	su_dg_nr++;
++	t = su_dg_lba;
++	if (t >= lba && t < lba + nb && su_dg_tlines < 12) {
++		int64_t off = (t == lba) ? 0 : (int64_t)(t - lba) * UFS_BLOCK - (int64_t)skip;
++		uint32_t avail = (t == lba) ? (UFS_BLOCK - skip) : UFS_BLOCK;
++		uint32_t ovi = (su_ov_on && su_ov_dir && t < su_ov_nblk) ? su_ov_dir[t] : 0;
++		uint8_t b[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
++		uint32_t nz = 0, n;
++
++		if (off < (int64_t)want) {
++			const uint8_t *p = (const uint8_t *)dst + off;
++
++			if (avail > want - (uint32_t)off) {
++				avail = want - (uint32_t)off;
++			}
++			for (n = 0; n < avail; n++) {
++				if (p[n]) {
++					nz++;
++				}
++				if (n < 8) {
++					b[n] = p[n];
++				}
++			}
++			su_dg_tlines++;
++			SULOG("SWEET UFS: ufsdiag86 R watch lba %llu req %llu nblk %u skip %u want %u ov %u nz %u/%u b %02x%02x%02x%02x%02x%02x%02x%02x\n",
++				(unsigned long long)t, (unsigned long long)lba, nb, skip, want, ovi, nz, avail,
++				b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]);
++		}
++	}
++}
++
+ /* Copy overlaid 4 KiB blocks over data just read from the device. */
+ static void
+ su_ov_patch_read(caddr_t dst, uint64_t lba, uint32_t skip, uint32_t want)
+@@ -2499,6 +2611,7 @@ sweet_ufs_strategy(buf_t bp)
+ 		}
+ 		if (!(buf_flags(bp) & B_READ)) {
+ 			error = su_ov_write(vaddr + done, lba, skip, want, pb);
++			su_dg_w(lba, skip, want, error);
+ 			if (error) {
+ 				break;
+ 			}
+@@ -2515,6 +2628,7 @@ sweet_ufs_strategy(buf_t bp)
+ 		if (su_ov_on) {
+ 			su_ov_patch_read(vaddr + done, lba, skip, want);
+ 		}
++		su_dg_r(vaddr + done, lba, skip, want);
+ 		done += want;
+ 		buf_setresid(bp, count - done);
+ 	}
