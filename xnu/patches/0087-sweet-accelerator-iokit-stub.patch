@@ -1,0 +1,109 @@
+diff --git a/iokit/Kernel/arm/SweetAccel.cpp b/iokit/Kernel/arm/SweetAccel.cpp
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/iokit/Kernel/arm/SweetAccel.cpp
+@@ -0,0 +1,85 @@
++/*
++ * Built-in IOAcceleratorES stand-in for SWEET (logging only).
++ *
++ * backboardd (iOS 16.7) loops on IOServiceMatching("IOAcceleratorES"), which finds
++ * nothing because the S21 has no GPU service here. This registers a service of that
++ * class and a user client that logs every external method call and fails it with
++ * kIOReturnUnsupported, to show what backboardd asks for next. No real GPU behind it.
++ */
++#include <pexpert/arm64/board_config.h>
++
++#if defined(SWEET)
++#include <IOKit/IOService.h>
++#include <IOKit/IOUserClient.h>
++#include <IOKit/IOKitKeys.h>
++#include <IOKit/IOLib.h>
++#include <IOKit/IOMemoryDescriptor.h>
++#include <sys/proc.h>
++
++#define SWEET_ACCEL_MAXLOG 300
++
++static uint32_t sweet_accel_calls;
++
++class IOAcceleratorES : public IOService {
++	OSDeclareDefaultStructors(IOAcceleratorES);
++
++public:
++	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(IOAcceleratorES, IOService);
++
++bool
++IOAcceleratorES::start(IOService *provider)
++{
++	if (!IOService::start(provider)) {
++		return false;
++	}
++	setProperty(kIOUserClientClassKey, "SweetAcceleratorUserClient");
++	registerService();
++	IOLog("SWEET ACCEL: IOAcceleratorES stand-in registered\n");
++	return true;
++}
++
++class SweetAcceleratorUserClient : public IOUserClient {
++	OSDeclareDefaultStructors(SweetAcceleratorUserClient);
++
++public:
++	IOReturn clientClose(void) APPLE_KEXT_OVERRIDE;
++	IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments *args,
++		IOExternalMethodDispatch *dispatch, OSObject *target,
++		void *reference) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(SweetAcceleratorUserClient, IOUserClient);
++
++IOReturn
++SweetAcceleratorUserClient::clientClose(void)
++{
++	terminate();
++	return kIOReturnSuccess;
++}
++
++IOReturn
++SweetAcceleratorUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments *args,
++	__unused IOExternalMethodDispatch *dispatch, __unused OSObject *target,
++	__unused void *reference)
++{
++	uint32_t in_scalars = args->scalarInputCount;
++	uint32_t in_struct = args->structureInputDescriptor != NULL ?
++		(uint32_t)args->structureInputDescriptor->getLength() : args->structureInputSize;
++	uint32_t out_scalars = args->scalarOutputCount;
++	uint32_t out_struct = args->structureOutputDescriptor != NULL ?
++		(uint32_t)args->structureOutputDescriptor->getLength() : args->structureOutputSize;
++	unsigned long long arg0 = in_scalars > 0 ? (unsigned long long)args->scalarInput[0] : 0;
++
++	if (sweet_accel_calls < SWEET_ACCEL_MAXLOG) {
++		sweet_accel_calls++;
++		char name[32];
++		proc_selfname(name, sizeof(name));
++		IOLog("SWEET ACCEL: %s sel %u arg0 %llu in %u/%u out %u/%u -> unsupported\n", name, selector,
++			arg0, in_scalars, in_struct, out_scalars, out_struct);
++	}
++	return kIOReturnUnsupported;
++}
++#endif /* SWEET */
+diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -59,2 +59,7 @@ const char * gIOKernelConfigTables =
+     "   },"
++    "   {"
++    "     'IOClass'         = IOAcceleratorES;"
++    "     'IOProviderClass' = IOResources;"
++    "     'IOMatchCategory' = IOAcceleratorES;"
++    "   },"
+     "   {"
+diff --git a/iokit/conf/files.arm64 b/iokit/conf/files.arm64
+--- a/iokit/conf/files.arm64
++++ b/iokit/conf/files.arm64
+@@ -15,2 +15,3 @@
+ iokit/Kernel/arm/SweetAMFI.cpp                                   optional iokitcpp
++iokit/Kernel/arm/SweetAccel.cpp                                  optional iokitcpp
+ iokit/Kernel/arm/SweetWatchdog.cpp                               optional iokitcpp
