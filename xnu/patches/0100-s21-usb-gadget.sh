@@ -720,8 +720,24 @@ ud_thread(void *arg __unused, wait_result_t wr __unused)
  * so the boot is included. Nothing here may print (it would feed itself).
  * Boot-arg sweetusblog=0 disables it.
  */
-extern uint32_t sweet_log_copy(uint64_t *pos, char *out, uint32_t max);
-extern uint64_t sweet_log_position(void);
+/*
+ * Weak fallbacks: the real ones come from sweet_ufs.c (patches 0047/0069/0077)
+ * and win at link time when present. Without them the log stream is just empty.
+ */
+__attribute__((weak)) uint32_t sweet_log_copy(uint64_t *pos, char *out, uint32_t max);
+__attribute__((weak)) uint64_t sweet_log_position(void);
+
+__attribute__((weak)) uint32_t
+sweet_log_copy(uint64_t *pos __unused, char *out __unused, uint32_t max __unused)
+{
+	return 0;
+}
+
+__attribute__((weak)) uint64_t
+sweet_log_position(void)
+{
+	return 0;
+}
 
 static void
 ud_log_thread(void *arg __unused, wait_result_t wr __unused)
@@ -761,7 +777,7 @@ ud_log_thread(void *arg __unused, wait_result_t wr __unused)
 	}
 }
 
-static void
+void
 s21usb_gadget_start(vm_offset_t dwc)
 {
 	thread_t thread;
