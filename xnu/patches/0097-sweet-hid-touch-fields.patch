@@ -1,0 +1,41 @@
+--- a/iokit/Kernel/arm/hid/SweetHID.cpp
++++ b/iokit/Kernel/arm/hid/SweetHID.cpp
+@@ -356,6 +356,7 @@
+  * app-switcher gesture.
+  */
+ #define SWEET_TOUCH_EDGE_PX 48
++#define SWEET_TOUCH_EDGE_BOTTOM_PX 100
+ class SweetHIDTouch : public IOHIDEventService {
+ 	OSDeclareDefaultStructors(SweetHIDTouch);
+ public:
+@@ -473,7 +474,7 @@
+ 	}
+ 	if (!was && down) {
+ 		fEdge[finger] = x < SWEET_TOUCH_EDGE_PX || x > 1079 - SWEET_TOUCH_EDGE_PX ||
+-		    y < SWEET_TOUCH_EDGE_PX || y > 2399 - SWEET_TOUCH_EDGE_PX;
++		    y < SWEET_TOUCH_EDGE_PX || y > 2399 - SWEET_TOUCH_EDGE_BOTTOM_PX;
+ 	}
+ 
+ 	collection = IOHIDEvent::digitizerEvent(now, 0, kIOHIDDigitizerTransducerTypeHand, false, 0, 0, 0);
+@@ -482,6 +483,8 @@
+ 		return;
+ 	}
+ 	collection->setIntegerValue(kIOHIDEventFieldDigitizerCollection, TRUE);
++	collection->setIntegerValue(kIOHIDEventFieldDigitizerIsDisplayIntegrated, 1);
++	collection->setIntegerValue(kIOHIDEventFieldIsBuiltIn, 1);
+ 
+ 	UInt32 cmask = 0;
+ 	for (int i = 0; i < SWEET_TOUCH_FINGERS; i++) {
+@@ -508,9 +511,11 @@
+ 				mask |= kIOHIDDigitizerEventIdentity;
+ 			}
+ 		}
+-		child->setIntegerValue(kIOHIDEventFieldDigitizerIndex, i);
++		child->setIntegerValue(kIOHIDEventFieldDigitizerIndex, i + 1);
+ 		child->setIntegerValue(kIOHIDEventFieldDigitizerIdentity, i + 2);
+ 		child->setIntegerValue(kIOHIDEventFieldDigitizerTouch, d);
++		child->setFixedValue(kIOHIDEventFieldDigitizerPressure, d ? 0x10000 : 0);
++		child->setIntegerValue(kIOHIDEventFieldDigitizerIsDisplayIntegrated, 1);
+ 		child->setIntegerValue(kIOHIDEventFieldDigitizerEventMask, mask);
+ 		collection->appendChild(child);
+ 		child->release();
