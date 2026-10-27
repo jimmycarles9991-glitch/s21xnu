@@ -12,10 +12,10 @@ index 9e970d3..408bfa8 100644
  bsd/dev/unix_startup.c			standard
 diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
 new file mode 100644
-index 0000000..e0ba39d
+index 0000000..bf827f5
 --- /dev/null
 +++ b/bsd/dev/sweet_touch.c
-@@ -0,0 +1,438 @@
+@@ -0,0 +1,439 @@
 +/*
 + * Touchscreen for the S21+ (Exynos 2100): Samsung LSI sec_ts-family controller
 + * (kernel driver identifies as "slsi_ts", DT compatible "slsi,slsi_ts") at I2C
@@ -80,6 +80,7 @@ index 0000000..e0ba39d
 +#include <pexpert/pexpert.h>
 +#include <stdarg.h>
 +#include <sys/systm.h>
++extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
 +
 +/* ------------------------------------------------------------------------ */
 +/* GPIO bit-bang, verified Exynos 2100 register map (see header comment)    */
