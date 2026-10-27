@@ -12,10 +12,10 @@ index 9e970d3..408bfa8 100644
  bsd/dev/unix_startup.c			standard
 diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
 new file mode 100644
-index 0000000..7a6b5df
+index 0000000..a0b87e3
 --- /dev/null
 +++ b/bsd/dev/sweet_touch.c
-@@ -0,0 +1,477 @@
+@@ -0,0 +1,499 @@
 +/*
 + * Touchscreen for the S21+ (Exynos 2100): Samsung LSI sec_ts-family controller
 + * (kernel driver identifies as "slsi_ts", DT compatible "slsi,slsi_ts") at I2C
@@ -430,6 +430,28 @@ index 0000000..7a6b5df
 +			}
 +		}
 +		note("scan ts ack: [%s] pmic ack: [%s]", ts_acks, pm_acks);
++		{
++			uint8_t rg, val;
++			char rb[64] = "", sb[48] = "";
++			size_t rl = 0, sl = 0;
++			struct bbi2c sw = { ts_bus_va, TS_SDA_BIT, TS_SCL_BIT };
++			for (rg = 0; rg < 0x10; rg++) {
++				if (i2c_write_read(&pmic_i2c, S2DOS05_ADDR, &rg, 1, &val, 1)) {
++					rl += (size_t)snprintf(rb + rl, sizeof(rb) - rl, "-- ");
++				} else {
++					rl += (size_t)snprintf(rb + rl, sizeof(rb) - rl, "%02x ", val);
++				}
++			}
++			for (uint32_t a = 0x08; a < 0x78; a++) {
++				i2c_start(&sw);
++				int nk = i2c_wbyte(&sw, (uint8_t)(a << 1));
++				i2c_stop(&sw);
++				if (!nk && sl + 4 < sizeof(sb)) {
++					sl += (size_t)snprintf(sb + sl, sizeof(sb) - sl, "%02x ", a);
++				}
++			}
++			note("S2 regs [%s] attn=%d swapscan [%s]", rb, pin_get(attn_va, ATTN_BIT), sb);
++		}
 +		panic("sweet_touch: %s", summary);
 +	}
 +
