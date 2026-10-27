@@ -1,0 +1,42 @@
+diff --git a/osfmk/kern/exception.c b/osfmk/kern/exception.c
+index a20a764..58d601a 100644
+--- a/osfmk/kern/exception.c
++++ b/osfmk/kern/exception.c
+@@ -935,6 +935,9 @@ sweet_crash_strings(const char *name)
+ 	if (!found) {
+ 		return;
+ 	}
++	uint32_t strf = 0, strfreeze = 0;
++	(void)PE_parse_boot_argn("sweetstrf", &strf, sizeof(strf));
++	(void)PE_parse_boot_argn("sweetfreeze", &strfreeze, sizeof(strfreeze));
+ 	buf = kalloc_data(65536, Z_WAITOK);
+ 	if (buf == NULL) {
+ 		return;
+@@ -972,11 +975,15 @@ sweet_crash_strings(const char *name)
+ 				}
+ 				size_t run = i - start;
+ 				if (run >= 24 && spaces >= 2) {
+-					char text[160];
++					static char text[640];
+ 					size_t m = run < sizeof(text) - 1 ? run : sizeof(text) - 1;
+ 					memcpy(text, buf + start, m);
+ 					text[m] = 0;
+-					if (strncmp(text, last, sizeof(last) - 1) != 0) {
++					if (strncmp(text, last, sizeof(last) - 1) != 0 &&
++					    (!strf || strnstr(text, "0x1", sizeof(text)) != NULL ||
++					    strnstr(text, "throw call stack", sizeof(text)) != NULL ||
++					    strnstr(text, "uncaught exception", sizeof(text)) != NULL ||
++					    strnstr(text, "nil object", sizeof(text)) != NULL)) {
+ 						printf("STR %s\n", text);
+ 						lines++;
+ 						strlcpy(last, text, sizeof(last));
+@@ -989,6 +996,9 @@ sweet_crash_strings(const char *name)
+ 	}
+ 	printf("STR done: %llu KiB scanned, %d strings\n", scanned >> 10, lines);
+ 	kfree_data(buf, 65536);
++	if (strfreeze) {
++		panic("SWEET: sweetfreeze after %s crash dump", name);
++	}
+ }
+ /*
+  * SWEET process sampler (bsd/dev/sweet_sample.c): user pc/lr/sp and a frame
