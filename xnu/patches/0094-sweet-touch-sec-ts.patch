@@ -12,10 +12,10 @@ index 9e970d3..408bfa8 100644
  bsd/dev/unix_startup.c			standard
 diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
 new file mode 100644
-index 0000000..876fa6a
+index 0000000..7a6b5df
 --- /dev/null
 +++ b/bsd/dev/sweet_touch.c
-@@ -0,0 +1,440 @@
+@@ -0,0 +1,477 @@
 +/*
 + * Touchscreen for the S21+ (Exynos 2100): Samsung LSI sec_ts-family controller
 + * (kernel driver identifies as "slsi_ts", DT compatible "slsi,slsi_ts") at I2C
@@ -375,13 +375,14 @@ index 0000000..876fa6a
 +void
 +sweet_touch_init(void)
 +{
-+	int touch_ts = 0, touch_pwr = 0, touch_flip = 0, touch_trace = 0;
++	int touch_ts = 0, touch_pwr = 0, touch_flip = 0, touch_trace = 0, touch_pull = 0;
 +	uint32_t touch_poll_us = 8000;
 +
 +	if (!PE_parse_boot_argn("touch_ts", &touch_ts, sizeof(touch_ts))) {
 +		return; /* nothing unless explicitly asked, same convention as the rest of SWEET */
 +	}
 +	PE_parse_boot_argn("touch_pwr", &touch_pwr, sizeof(touch_pwr));
++	PE_parse_boot_argn("touch_pull", &touch_pull, sizeof(touch_pull));
 +	PE_parse_boot_argn("touch_flip", &touch_flip, sizeof(touch_flip));
 +	PE_parse_boot_argn("touch_trace", &touch_trace, sizeof(touch_trace));
 +	PE_parse_boot_argn("touch_poll_us", &touch_poll_us, sizeof(touch_poll_us));
@@ -395,6 +396,42 @@ index 0000000..876fa6a
 +
 +	/* ATTN as input, weak pull-up (matches the DTS's tsp_attn_input state) */
 +	pin_func(attn_va, ATTN_BIT, FUNC_INPUT);
++
++	if (touch_ts == 4) {
++		uint32_t tcon = *(volatile uint32_t *)(ts_bus_va + REG_CON);
++		uint32_t pcon = *(volatile uint32_t *)(pmic_bus_va + REG_CON);
++		uint32_t tpud = *(volatile uint32_t *)(ts_bus_va + REG_PUD);
++		char ts_acks[64] = "", pm_acks[64] = "";
++		size_t tl = 0, pl = 0;
++		if (touch_pull) {
++			/* gpp4-0/1: 2 bits per pin, 3 = pull-up (assumed width) */
++			*(volatile uint32_t *)(ts_bus_va + REG_PUD) = (tpud & ~0xFU) | 0xFU;
++			sleep_us(1000);
++		}
++		i2c_scl(&ts_i2c, 1); i2c_sda(&ts_i2c, 1);
++		i2c_scl(&pmic_i2c, 1); i2c_sda(&pmic_i2c, 1);
++		sleep_us(2000);
++		note("DIAG con ts=%08x pmic=%08x pud ts=%08x pull=%d idle ts scl%d sda%d pmic scl%d sda%d",
++		    tcon, pcon, tpud, touch_pull,
++		    pin_get(ts_i2c.bank_va, ts_i2c.scl_bit), pin_get(ts_i2c.bank_va, ts_i2c.sda_bit),
++		    pin_get(pmic_i2c.bank_va, pmic_i2c.scl_bit), pin_get(pmic_i2c.bank_va, pmic_i2c.sda_bit));
++		for (uint32_t a = 0x08; a < 0x78; a++) {
++			i2c_start(&ts_i2c);
++			int nk = i2c_wbyte(&ts_i2c, (uint8_t)(a << 1));
++			i2c_stop(&ts_i2c);
++			if (!nk && tl + 4 < sizeof(ts_acks)) {
++				tl += (size_t)snprintf(ts_acks + tl, sizeof(ts_acks) - tl, "%02x ", a);
++			}
++			i2c_start(&pmic_i2c);
++			nk = i2c_wbyte(&pmic_i2c, (uint8_t)(a << 1));
++			i2c_stop(&pmic_i2c);
++			if (!nk && pl + 4 < sizeof(pm_acks)) {
++				pl += (size_t)snprintf(pm_acks + pl, sizeof(pm_acks) - pl, "%02x ", a);
++			}
++		}
++		note("scan ts ack: [%s] pmic ack: [%s]", ts_acks, pm_acks);
++		panic("sweet_touch: %s", summary);
++	}
 +
 +	if (touch_pwr >= 1) {
 +		if (touch_pwr == 2) {
