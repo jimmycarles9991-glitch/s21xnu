@@ -12,7 +12,7 @@ index 9e970d3..408bfa8 100644
  bsd/dev/unix_startup.c			standard
 diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
 new file mode 100644
-index 0000000..d82f0e9
+index 0000000..a9929b5
 --- /dev/null
 +++ b/bsd/dev/sweet_touch.c
 @@ -0,0 +1,560 @@
@@ -342,7 +342,7 @@ index 0000000..d82f0e9
 +		return 0;
 +	}
 +	t->id     = (e[0] >> 2) & 0xF;
-+	t->down   = ((e[0] >> 6) & 0x3) != 0;   /* tchsta: 0 = up, nonzero = down/move */
++	t->down   = ((((e[0] >> 6) & 0x3) == 1) || (((e[0] >> 6) & 0x3) == 2)); /* tchsta: 1 press, 2 move, 3 release */
 +	t->x      = (e[1] << 4) | (e[3] & 0xF);
 +	t->y      = (e[2] << 4) | ((e[3] >> 4) & 0xF);
 +	t->major  = e[4];
@@ -363,7 +363,7 @@ index 0000000..d82f0e9
 +static void
 +sweet_touch_post(struct ts_touch *t, uint32_t flip)
 +{
-+        int x = t->x, y = t->y;
++        int x = (int)(((uint32_t)t->x * 1080u) >> 12), y = (int)(((uint32_t)t->y * 2400u) >> 12);
 +        if (flip & 1) { x = S21_PANEL_MAXX - x; }
 +        if (flip & 2) { y = S21_PANEL_MAXY - y; }
 +        sweet_hid_touch(t->id, t->down ? 1 : 0, x, y);
@@ -501,7 +501,7 @@ index 0000000..d82f0e9
 +					sl += (size_t)snprintf(sb + sl, sizeof(sb) - sl, "%02x ", a);
 +				}
 +			}
-+			note("S2 regs [%s] attn=%d swapscan2 [%s]", rb, pin_get(attn_va, ATTN_BIT), sb);
++			note("S2 regs [%s] attn=%d swapscan3 [%s]", rb, pin_get(attn_va, ATTN_BIT), sb);
 +		}
 +		panic("sweet_touch: %s", summary);
 +	}
