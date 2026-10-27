@@ -1,0 +1,21 @@
+diff --git a/osfmk/kern/exception.c b/osfmk/kern/exception.c
+index 58d601a..1f31f23 100644
+--- a/osfmk/kern/exception.c
++++ b/osfmk/kern/exception.c
+@@ -997,7 +997,15 @@ sweet_crash_strings(const char *name)
+ 	printf("STR done: %llu KiB scanned, %d strings\n", scanned >> 10, lines);
+ 	kfree_data(buf, 65536);
+ 	if (strfreeze) {
+-		panic("SWEET: sweetfreeze after %s crash dump", name);
++		extern boolean_t ml_set_interrupts_enabled(boolean_t);
++		if (strfreeze == 2) {
++			panic("SWEET: sweetfreeze after %s crash dump", name);
++		}
++		printf("SWEET: sweetfreeze: halted after %s crash dump\n", name);
++		(void)ml_set_interrupts_enabled(FALSE);
++		for (;;) {
++			__asm__ volatile ("nop");
++		}
+ 	}
+ }
+ /*
