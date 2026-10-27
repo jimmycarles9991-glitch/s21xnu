@@ -12,7 +12,7 @@ index 9e970d3..408bfa8 100644
  bsd/dev/unix_startup.c			standard
 diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
 new file mode 100644
-index 0000000..a0b87e3
+index 0000000..73247a7
 --- /dev/null
 +++ b/bsd/dev/sweet_touch.c
 @@ -0,0 +1,499 @@
@@ -94,8 +94,8 @@ index 0000000..a0b87e3
 +#define REG_DAT  0x04U
 +#define REG_PUD  0x08U
 +
-+#define TS_SDA_BIT   0U   /* gpp4-0 */
-+#define TS_SCL_BIT   1U   /* gpp4-1 */
++#define TS_SDA_BIT   1U   /* gpp4-1 */
++#define TS_SCL_BIT   0U   /* gpp4-0 */
 +#define PMIC_SCL_BIT 2U   /* gpp0-2 */
 +#define PMIC_SDA_BIT 3U   /* gpp0-3 */
 +#define ATTN_BIT     0U   /* gpa1-0 */
@@ -450,7 +450,7 @@ index 0000000..a0b87e3
 +					sl += (size_t)snprintf(sb + sl, sizeof(sb) - sl, "%02x ", a);
 +				}
 +			}
-+			note("S2 regs [%s] attn=%d swapscan [%s]", rb, pin_get(attn_va, ATTN_BIT), sb);
++			note("S2 regs [%s] attn=%d swapscan2 [%s]", rb, pin_get(attn_va, ATTN_BIT), sb);
 +		}
 +		panic("sweet_touch: %s", summary);
 +	}
