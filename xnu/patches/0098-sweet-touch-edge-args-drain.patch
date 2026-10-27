@@ -1,0 +1,87 @@
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index e1b1a24..8c5d0d2 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -348,7 +348,7 @@ sweet_touch_post(struct ts_touch *t, uint32_t flip)
+         int x = (int)(((uint32_t)t->x * 1080u) >> 12), y = (int)(((uint32_t)t->y * 2400u) >> 12);
+         if (flip & 1) { x = S21_PANEL_MAXX - x; }
+         if (flip & 2) { y = S21_PANEL_MAXY - y; }
+-        sweet_hid_touch(t->id, t->down ? 1 : 0, x, y);
++        sweet_hid_touch(t->id - 1, t->down ? 1 : 0, x, y);
+ }
+ 
+ /* ------------------------------------------------------------------------ */
+@@ -356,6 +356,7 @@ sweet_touch_post(struct ts_touch *t, uint32_t flip)
+ static int ts_g_trace, ts_g_flip;
+ static uint32_t ts_g_poll_us;
+ static int ts_g_ev;
++static int ts_g_burst = 32; /* 0098: events drained per poll; touch_burst=1 = old behaviour */
+ 
+ static void
+ ts_block_us(uint32_t us)
+@@ -374,7 +375,7 @@ sweet_touch_poll(void *arg, wait_result_t w)
+ 	note("TSPOLL thread start poll_us=%u", ts_g_poll_us);
+ 	for (;;) {
+ 		polls++;
+-		if (pin_get(attn_va, ATTN_BIT) == 0) {
++		for (int burst = 0; burst < ts_g_burst && pin_get(attn_va, ATTN_BIT) == 0; burst++) {
+ 			uint8_t ev[8];
+ 			lows++;
+ 			cmd = SEC_TS_READ_ONE_EVENT;
+@@ -419,6 +420,13 @@ sweet_touch_init(void)
+ 	PE_parse_boot_argn("touch_flip", &touch_flip, sizeof(touch_flip));
+ 	PE_parse_boot_argn("touch_trace", &touch_trace, sizeof(touch_trace));
+ 	PE_parse_boot_argn("touch_poll_us", &touch_poll_us, sizeof(touch_poll_us));
++	{
++		int burst = 0;
++		if (PE_parse_boot_argn("touch_burst", &burst, sizeof(burst)) && burst >= 1 && burst <= 256) {
++			ts_g_burst = burst;
++		}
++		note("0098 burst=%d", ts_g_burst);
++	}
+ 
+ 	ts_bus_va   = ml_io_map(TS_BUS_BASE, 0x20);
+ 	pmic_bus_va = ml_io_map(PMIC_BUS_BASE, 0x20);
+diff --git a/iokit/Kernel/arm/hid/SweetHID.cpp b/iokit/Kernel/arm/hid/SweetHID.cpp
+index 3967513..679c7a4 100644
+--- a/iokit/Kernel/arm/hid/SweetHID.cpp
++++ b/iokit/Kernel/arm/hid/SweetHID.cpp
+@@ -357,6 +357,26 @@ OSDefineMetaClassAndStructors(SweetHIDButtons, IOHIDEventService);
+  */
+ #define SWEET_TOUCH_EDGE_PX 48
+ #define SWEET_TOUCH_EDGE_BOTTOM_PX 100
++static int gSweetEdgePx = SWEET_TOUCH_EDGE_PX;
++static int gSweetEdgeBottomPx = SWEET_TOUCH_EDGE_BOTTOM_PX;
++/* 0098: boot-args touch_edge=N (sides/top) and touch_edge_bottom=N, in panel px. */
++static void
++sweetTouchEdgeInit(void)
++{
++	static bool done;
++	int v = 0;
++	if (done) {
++		return;
++	}
++	done = true;
++	if (PE_parse_boot_argn("touch_edge", &v, sizeof(v)) && v >= 0 && v <= 1000) {
++		gSweetEdgePx = v;
++	}
++	if (PE_parse_boot_argn("touch_edge_bottom", &v, sizeof(v)) && v >= 0 && v <= 1000) {
++		gSweetEdgeBottomPx = v;
++	}
++	IOLog("SWEET TOUCHEDGE v1: edge %d bottom %d\n", gSweetEdgePx, gSweetEdgeBottomPx);
++}
+ class SweetHIDTouch : public IOHIDEventService {
+ 	OSDeclareDefaultStructors(SweetHIDTouch);
+ public:
+@@ -473,8 +493,9 @@ SweetHIDTouch::touch(int finger, bool down, int x, int y)
+ 		return;
+ 	}
+ 	if (!was && down) {
+-		fEdge[finger] = x < SWEET_TOUCH_EDGE_PX || x > 1079 - SWEET_TOUCH_EDGE_PX ||
+-		    y < SWEET_TOUCH_EDGE_PX || y > 2399 - SWEET_TOUCH_EDGE_BOTTOM_PX;
++		sweetTouchEdgeInit();
++		fEdge[finger] = x < gSweetEdgePx || x > 1079 - gSweetEdgePx ||
++		    y < gSweetEdgePx || y > 2399 - gSweetEdgeBottomPx;
+ 	}
+ 
+ 	collection = IOHIDEvent::digitizerEvent(now, 0, kIOHIDDigitizerTransducerTypeHand, false, 0, 0, 0);
