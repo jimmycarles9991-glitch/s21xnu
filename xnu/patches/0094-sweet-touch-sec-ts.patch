@@ -12,7 +12,7 @@ index 9e970d3..408bfa8 100644
  bsd/dev/unix_startup.c			standard
 diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
 new file mode 100644
-index 0000000..a9929b5
+index 0000000..e1b1a24
 --- /dev/null
 +++ b/bsd/dev/sweet_touch.c
 @@ -0,0 +1,560 @@
@@ -337,14 +337,14 @@ index 0000000..a9929b5
 +decode_event(const uint8_t *e, struct ts_touch *t)
 +{
 +	uint8_t eid = e[0] & 0x3;
-+	if (eid != 0x3) { /* 0x3 = coordinate event in this struct's eid field */
++	if (eid != 0x0 || ((e[0] >> 2) & 0xF) == 0) { /* sec_ts y79a: eid 0 = coordinate, tid 0 = empty */
 +		/* not a coordinate record: status/gesture event, or empty (eid==0 && byte==0) */
 +		return 0;
 +	}
 +	t->id     = (e[0] >> 2) & 0xF;
 +	t->down   = ((((e[0] >> 6) & 0x3) == 1) || (((e[0] >> 6) & 0x3) == 2)); /* tchsta: 1 press, 2 move, 3 release */
-+	t->x      = (e[1] << 4) | (e[3] & 0xF);
-+	t->y      = (e[2] << 4) | ((e[3] >> 4) & 0xF);
++	t->x      = (e[1] << 4) | ((e[3] >> 4) & 0xF);
++	t->y      = (e[2] << 4) | (e[3] & 0xF);
 +	t->major  = e[4];
 +	t->minor  = e[5];
 +	t->z      = e[6] & 0x3F;
@@ -501,7 +501,7 @@ index 0000000..a9929b5
 +					sl += (size_t)snprintf(sb + sl, sizeof(sb) - sl, "%02x ", a);
 +				}
 +			}
-+			note("S2 regs [%s] attn=%d swapscan3 [%s]", rb, pin_get(attn_va, ATTN_BIT), sb);
++			note("S2 regs [%s] attn=%d swapscan4 [%s]", rb, pin_get(attn_va, ATTN_BIT), sb);
 +		}
 +		panic("sweet_touch: %s", summary);
 +	}
