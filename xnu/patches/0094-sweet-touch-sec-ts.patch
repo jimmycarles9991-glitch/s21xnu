@@ -12,10 +12,10 @@ index 9e970d3..408bfa8 100644
  bsd/dev/unix_startup.c			standard
 diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
 new file mode 100644
-index 0000000..a3ec4d5
+index 0000000..d82f0e9
 --- /dev/null
 +++ b/bsd/dev/sweet_touch.c
-@@ -0,0 +1,559 @@
+@@ -0,0 +1,560 @@
 +/*
 + * Touchscreen for the S21+ (Exynos 2100): Samsung LSI sec_ts-family controller
 + * (kernel driver identifies as "slsi_ts", DT compatible "slsi,slsi_ts") at I2C
@@ -74,6 +74,7 @@ index 0000000..a3ec4d5
 + */
 +
 +#include <kern/clock.h>
++#include <kern/sched_prim.h>
 +#include <kern/thread.h>
 +#include <libkern/libkern.h>
 +#include <mach/mach_types.h>
