@@ -366,7 +366,7 @@ index 0000000..e1b1a24
 +        int x = (int)(((uint32_t)t->x * 1080u) >> 12), y = (int)(((uint32_t)t->y * 2400u) >> 12);
 +        if (flip & 1) { x = S21_PANEL_MAXX - x; }
 +        if (flip & 2) { y = S21_PANEL_MAXY - y; }
-+        sweet_hid_touch(t->id, t->down ? 1 : 0, x, y);
++        sweet_hid_touch(t->id - 1, t->down ? 1 : 0, x, y);
 +}
 +
 +/* ------------------------------------------------------------------------ */
