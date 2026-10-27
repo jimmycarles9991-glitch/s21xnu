@@ -721,22 +721,48 @@ ud_thread(void *arg __unused, wait_result_t wr __unused)
  * Boot-arg sweetusblog=0 disables it.
  */
 /*
- * Weak fallbacks: the real ones come from sweet_ufs.c (patches 0047/0069/0077)
- * and win at link time when present. Without them the log stream is just empty.
+ * Weak fallbacks: the real ring (sweet_ufs.c, patches 0047/0077) wins at link
+ * time when present. Otherwise stream the kernel message buffer (dmesg: every
+ * printf()) by following its write index. pos is a virtual byte counter.
  */
+#include <sys/msgbuf.h>
+extern struct msgbuf *msgbufp;
+
+static int s21_log_last = -1;           /* msg_bufx at the last call */
+
 __attribute__((weak)) uint32_t sweet_log_copy(uint64_t *pos, char *out, uint32_t max);
 __attribute__((weak)) uint64_t sweet_log_position(void);
-
-__attribute__((weak)) uint32_t
-sweet_log_copy(uint64_t *pos __unused, char *out __unused, uint32_t max __unused)
-{
-	return 0;
-}
 
 __attribute__((weak)) uint64_t
 sweet_log_position(void)
 {
 	return 0;
+}
+
+__attribute__((weak)) uint32_t
+sweet_log_copy(uint64_t *pos __unused, char *out, uint32_t max)
+{
+	struct msgbuf *mb = msgbufp;
+	uint32_t n = 0;
+
+	if (mb == NULL || mb->msg_bufc == NULL || mb->msg_size <= 0) {
+		return 0;
+	}
+	int size = mb->msg_size, x = mb->msg_bufx;
+	if (x < 0 || x >= size) {
+		return 0;
+	}
+	if (s21_log_last < 0) {         /* first call: everything the buffer holds */
+		s21_log_last = (mb->msg_bufc[x] != 0) ? x : 0;
+	}
+	while (s21_log_last != x && n < max) {
+		char c = mb->msg_bufc[s21_log_last];
+		s21_log_last = (s21_log_last + 1) % size;
+		if (c != 0) {
+			out[n++] = c;
+		}
+	}
+	return n;
 }
 
 static void
