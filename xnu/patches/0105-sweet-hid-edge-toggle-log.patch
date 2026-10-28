@@ -1,0 +1,16 @@
+diff --git a/iokit/Kernel/arm/hid/SweetHID.cpp b/iokit/Kernel/arm/hid/SweetHID.cpp
+index 49cadf6..5029544 100644
+--- a/iokit/Kernel/arm/hid/SweetHID.cpp
++++ b/iokit/Kernel/arm/hid/SweetHID.cpp
+@@ -509,3 +509,3 @@ SweetHIDTouch::touch(int finger, bool down, int x, int y)
+ 		}
+-		UInt32 mask = fEdge[i] ? kIOHIDDigitizerEventFromEdgeTip : 0;
++		UInt32 mask = (fEdge[i] && !(sweet_hid_f & 32)) ? kIOHIDDigitizerEventFromEdgeTip : 0;
+ 		if (i == finger) {
+@@ -556,4 +556,4 @@ SweetHIDTouch::touch(int finger, bool down, int x, int y)
+ 	if (was != down) {
+-		IOLog("SWEET HID: touch %d %s at %d,%d%s\n", finger, down ? "down" : "up", x, y,
+-		    fEdge[finger] ? " edge" : "");
++		IOLog("SWEET HID: touch %d %s at %d,%d%s f=0x%x\n", finger, down ? "down" : "up", x, y,
++		    fEdge[finger] ? " edge" : "", (unsigned)sweet_hid_f);
+ 	}
