@@ -23,7 +23,7 @@ edit("\tcollection->setIntegerValue(kIOHIDEventFieldDigitizerCollection, TRUE);\
      "\tcollection->setIntegerValue(kIOHIDEventFieldDigitizerCollection, TRUE);\n"
      "\tcollection->setIntegerValue(kIOHIDEventFieldDigitizerIsDisplayIntegrated, 1);\n"
      "\tcollection->setIntegerValue(kIOHIDEventFieldIsBuiltIn, 1);\n", "collection")
-edit("\tUInt32 cmask = 0;\n", "\tUInt32 cmask = 0;\n\tUInt32 fmask = 0;\n", "cmask")
+edit("\tUInt32 cmask = 0;\n", "\tUInt32 cmask = 0;\n\tUInt32 fmask = 0;\n\tstatic const char sweet_move_fix[] __attribute__((used)) = \"" + MARKER + "\";\n", "cmask")
 edit("\t\t\tif (was != down) {\n"
      "\t\t\t\tmask |= kIOHIDDigitizerEventTouch | kIOHIDDigitizerEventRange;\n"
      "\t\t\t}\n"

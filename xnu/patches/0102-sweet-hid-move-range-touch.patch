@@ -1,5 +1,5 @@
 diff --git a/iokit/Kernel/arm/hid/SweetHID.cpp b/iokit/Kernel/arm/hid/SweetHID.cpp
-index 27bc49d..7221a8b 100644
+index 27bc49d..5db5634 100644
 --- a/iokit/Kernel/arm/hid/SweetHID.cpp
 +++ b/iokit/Kernel/arm/hid/SweetHID.cpp
 @@ -358,2 +358,3 @@ OSDefineMetaClassAndStructors(SweetHIDButtons, IOHIDEventService);
@@ -11,15 +11,16 @@ index 27bc49d..7221a8b 100644
 -		    y < SWEET_TOUCH_EDGE_PX || y > 2399 - SWEET_TOUCH_EDGE_PX;
 +		    y < SWEET_TOUCH_EDGE_PX || y > 2399 - SWEET_TOUCH_EDGE_BOTTOM_PX;
  	}
-@@ -484,4 +485,7 @@ SweetHIDTouch::touch(int finger, bool down, int x, int y)
+@@ -484,4 +485,8 @@ SweetHIDTouch::touch(int finger, bool down, int x, int y)
  	collection->setIntegerValue(kIOHIDEventFieldDigitizerCollection, TRUE);
 +	collection->setIntegerValue(kIOHIDEventFieldDigitizerIsDisplayIntegrated, 1);
 +	collection->setIntegerValue(kIOHIDEventFieldIsBuiltIn, 1);
  
  	UInt32 cmask = 0;
 +	UInt32 fmask = 0;
++	static const char sweet_move_fix[] __attribute__((used)) = "sweet-hid move range-touch fix";
  	for (int i = 0; i < SWEET_TOUCH_FINGERS; i++) {
-@@ -500,5 +504,4 @@ SweetHIDTouch::touch(int finger, bool down, int x, int y)
+@@ -500,5 +505,4 @@ SweetHIDTouch::touch(int finger, bool down, int x, int y)
  		if (i == finger) {
 -			if (was != down) {
 -				mask |= kIOHIDDigitizerEventTouch | kIOHIDDigitizerEventRange;
@@ -27,7 +28,7 @@ index 27bc49d..7221a8b 100644
 +			/* sweet-hid move range-touch fix: Touch|Range on every sample while tracked */
 +			mask |= kIOHIDDigitizerEventTouch | kIOHIDDigitizerEventRange;
  			if (moved) {
-@@ -510,5 +513,10 @@ SweetHIDTouch::touch(int finger, bool down, int x, int y)
+@@ -510,5 +514,10 @@ SweetHIDTouch::touch(int finger, bool down, int x, int y)
  		}
 -		child->setIntegerValue(kIOHIDEventFieldDigitizerIndex, i);
 +		if (i == finger) {
@@ -39,7 +40,7 @@ index 27bc49d..7221a8b 100644
 +		child->setFixedValue(kIOHIDEventFieldDigitizerPressure, d ? 0x10000 : 0);
 +		child->setIntegerValue(kIOHIDEventFieldDigitizerIsDisplayIntegrated, 1);
  		child->setIntegerValue(kIOHIDEventFieldDigitizerEventMask, mask);
-@@ -532,2 +540,6 @@ SweetHIDTouch::touch(int finger, bool down, int x, int y)
+@@ -532,2 +541,6 @@ SweetHIDTouch::touch(int finger, bool down, int x, int y)
  
 +	if (moved && down) {
 +		IOLog("SWEET HID: touch %d move at %d,%d mask=0x%x\n",
