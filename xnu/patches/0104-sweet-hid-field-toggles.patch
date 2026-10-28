@@ -1,0 +1,44 @@
+diff --git a/iokit/Kernel/arm/hid/SweetHID.cpp b/iokit/Kernel/arm/hid/SweetHID.cpp
+index 5e125b9..49cadf6 100644
+--- a/iokit/Kernel/arm/hid/SweetHID.cpp
++++ b/iokit/Kernel/arm/hid/SweetHID.cpp
+@@ -359,2 +359,4 @@ OSDefineMetaClassAndStructors(SweetHIDButtons, IOHIDEventService);
+ #define SWEET_TOUCH_EDGE_BOTTOM_PX 100
++/* sweet-hid field toggles: boot-arg sweethidf, set bit = feature off */
++static uint32_t sweet_hid_f;
+ class SweetHIDTouch : public IOHIDEventService {
+@@ -447,3 +449,4 @@ SweetHIDTouch::start(IOService *provider)
+ 	registerService();
+-	IOLog("SWEET HID: touch registered\n");
++	PE_parse_boot_argn("sweethidf", &sweet_hid_f, sizeof(sweet_hid_f));
++	IOLog("SWEET HID: touch registered sweet-hid field toggles f=0x%x\n", (unsigned)sweet_hid_f);
+ 	return true;
+@@ -486,4 +489,6 @@ SweetHIDTouch::touch(int finger, bool down, int x, int y)
+ 	collection->setIntegerValue(kIOHIDEventFieldDigitizerCollection, TRUE);
+-	collection->setIntegerValue(kIOHIDEventFieldDigitizerIsDisplayIntegrated, 1);
+-	collection->setIntegerValue(kIOHIDEventFieldIsBuiltIn, 1);
++	if (!(sweet_hid_f & 8)) {
++		collection->setIntegerValue(kIOHIDEventFieldDigitizerIsDisplayIntegrated, 1);
++		collection->setIntegerValue(kIOHIDEventFieldIsBuiltIn, 1);
++	}
+ 
+@@ -518,7 +523,11 @@ SweetHIDTouch::touch(int finger, bool down, int x, int y)
+ 		}
+-		child->setIntegerValue(kIOHIDEventFieldDigitizerIndex, i + 1);
++		child->setIntegerValue(kIOHIDEventFieldDigitizerIndex, i + ((sweet_hid_f & 4) ? 0 : 1));
+ 		child->setIntegerValue(kIOHIDEventFieldDigitizerIdentity, i + 2);
+ 		child->setIntegerValue(kIOHIDEventFieldDigitizerTouch, d);
+-		child->setFixedValue(kIOHIDEventFieldDigitizerPressure, d ? 0x10000 : 0);
+-		child->setIntegerValue(kIOHIDEventFieldDigitizerIsDisplayIntegrated, 1);
++		if (!(sweet_hid_f & 1)) {
++			child->setFixedValue(kIOHIDEventFieldDigitizerPressure, d ? 0x10000 : 0);
++		}
++		if (!(sweet_hid_f & 2)) {
++			child->setIntegerValue(kIOHIDEventFieldDigitizerIsDisplayIntegrated, 1);
++		}
+ 		child->setIntegerValue(kIOHIDEventFieldDigitizerEventMask, mask);
+@@ -539,3 +548,3 @@ SweetHIDTouch::touch(int finger, bool down, int x, int y)
+ 	collection->setIntegerValue(kIOHIDEventFieldDigitizerEventMask, cmask);
+-	collection->setIntegerValue(kIOHIDEventFieldDigitizerButtonMask, any ? 1 : 0);
++	collection->setIntegerValue(kIOHIDEventFieldDigitizerButtonMask, (any && !(sweet_hid_f & 16)) ? 1 : 0);
+ 	IOLockUnlock(fLock);
