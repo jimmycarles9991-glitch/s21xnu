@@ -1,0 +1,10 @@
+diff --git a/iokit/Kernel/arm/hid/SweetHID.cpp b/iokit/Kernel/arm/hid/SweetHID.cpp
+index 5db5634..5e125b9 100644
+--- a/iokit/Kernel/arm/hid/SweetHID.cpp
++++ b/iokit/Kernel/arm/hid/SweetHID.cpp
+@@ -469,3 +469,4 @@ SweetHIDTouch::touch(int finger, bool down, int x, int y)
+ 	IOFixed ny = (IOFixed)(((int64_t)(y + fOffY) << 16) / fLogicalH);
+-	bool moved = down && (nx != fX[finger] || ny != fY[finger]);
++	static const char sweet_first_fix[] __attribute__((used)) = "sweet-hid clean first sample";
++	bool moved = down && was && (nx != fX[finger] || ny != fY[finger]);
+ 	if (was == down && !moved) {
