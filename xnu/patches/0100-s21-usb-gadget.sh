@@ -170,6 +170,36 @@ ud_sync(uint32_t off, uint32_t len)
 	flush_dcache64((addr64_t)(ud.dma_pa + off), len, TRUE);
 }
 
+#include <stdarg.h>
+
+/* Private message ring: everything this driver prints is also kept here and
+ * streamed to the host as UDP (independent of the kernel's own log). */
+#define ULOG_SIZE 16384
+static char ulog_ring[ULOG_SIZE];
+static uint64_t ulog_total;
+
+static void ulog(const char *fmt, ...) __printflike(1, 2);
+static void
+ulog(const char *fmt, ...)
+{
+	char line[200];
+	va_list ap;
+	va_start(ap, fmt);
+	int n = vsnprintf(line, sizeof(line), fmt, ap);
+	va_end(ap);
+	if (n <= 0) {
+		return;
+	}
+	if (n > (int)sizeof(line) - 1) {
+		n = (int)sizeof(line) - 1;
+	}
+	printf("%s", line);
+	uint64_t at = __atomic_fetch_add(&ulog_total, (uint64_t)n, __ATOMIC_RELAXED);
+	for (int i = 0; i < n; i++) {
+		ulog_ring[(at + (uint64_t)i) % ULOG_SIZE] = line[i];
+	}
+}
+
 static void
 ud_sleep_ms(unsigned ms)
 {
@@ -191,14 +221,14 @@ ud_epcmd(unsigned ep, uint32_t cmd, uint32_t p0, uint32_t p1, uint32_t p2)
 		if (!(v & DEPCMD_CMDACT)) {
 			uint32_t status = (v >> 12) & 0xf;
 			if (status) {
-				printf("S21 USB: ep%u cmd 0x%x status %u\n", ep, cmd & 0xf, status);
+				ulog("S21 USB: ep%u cmd 0x%x status %u\n", ep, cmd & 0xf, status);
 				return -1;
 			}
 			return 0;
 		}
 		delay(1);
 	}
-	printf("S21 USB: ep%u cmd 0x%x timeout\n", ep, cmd & 0xf);
+	ulog("S21 USB: ep%u cmd 0x%x timeout\n", ep, cmd & 0xf);
 	return -1;
 }
 
@@ -320,13 +350,13 @@ ud_configure(void)
 	    ud_epcmd(EP_INT, DEPCMD_SETEPCONFIG, (3u << 1) | (16u << 3) | (2u << 17),
 	    (1u << 8) | (8u << 16) | ((uint32_t)EP_INT << 25), 0) ||
 	    ud_epcmd(EP_INT, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0)) {
-		printf("S21 USB: data endpoints setup failed\n");
+		ulog("S21 USB: data endpoints setup failed\n");
 		return;
 	}
 	dwc_wr(DALEPENA, dwc_rd(DALEPENA) | (1u << EP_RX) | (1u << EP_TX) | (1u << EP_INT));
 	ud.configured = true;
 	ud_rx_arm();
-	printf("S21 USB: ECM endpoints configured\n");
+	ulog("S21 USB: ECM endpoints configured\n");
 }
 
 static void
@@ -341,7 +371,7 @@ ud_setup(void)
 	uint32_t n = 0;
 	bool ok = true;
 
-	printf("S21 USB: setup %02x %02x %04x %04x len %u\n", type, req, value, index, length);
+	ulog("S21 USB: setup %02x %02x %04x %04x len %u\n", type, req, value, index, length);
 	ud.data_in = (type & 0x80) != 0;
 	if ((type & 0x60) == 0x20) {    /* class request (e.g. SET_ETHERNET_PACKET_FILTER) */
 		ok = (length == 0);
@@ -357,12 +387,12 @@ ud_setup(void)
 	} else if (req == 5) {          /* SET_ADDRESS: takes effect now (DWC3 handles the timing) */
 		uint32_t dcfg = dwc_rd(DCFG) & ~(0x7fu << 3);
 		dwc_wr(DCFG, dcfg | ((uint32_t)(value & 0x7f) << 3));
-		printf("S21 USB: address %u\n", value & 0x7f);
+		ulog("S21 USB: address %u\n", value & 0x7f);
 	} else if (req == 9) {          /* SET_CONFIGURATION */
 		if (value == 1) {
 			ud_configure();
 		}
-		printf("S21 USB: configured (%u)\n", value);
+		ulog("S21 USB: configured (%u)\n", value);
 	} else if (req == 8) {          /* GET_CONFIGURATION */
 		data[0] = ud.configured ? 1 : 0; n = 1;
 	} else if (req == 0) {          /* GET_STATUS */
@@ -573,7 +603,7 @@ ud_if_create(void)
 	init.broadcast_addr = etherbroadcastaddr;
 	init.broadcast_len = ETHER_ADDR_LEN;
 	if (ifnet_allocate_extended(&init, &ud.ifp) != 0) {
-		printf("S21 USB: ifnet_allocate failed\n");
+		ulog("S21 USB: ifnet_allocate failed\n");
 		ud.ifp = NULL;
 		return;
 	}
@@ -583,7 +613,7 @@ ud_if_create(void)
 	ifnet_set_baudrate(ud.ifp, 480000000);
 	ifnet_set_flags(ud.ifp, IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST, 0xffff);
 	if (ifnet_attach(ud.ifp, NULL) != 0) {
-		printf("S21 USB: ifnet_attach failed\n");
+		ulog("S21 USB: ifnet_attach failed\n");
 		ud.ifp = NULL;
 		return;
 	}
@@ -614,7 +644,7 @@ ud_if_create(void)
 		sock_close(so);
 	}
 	ifnet_set_flags(ud.ifp, IFF_UP | IFF_RUNNING, IFF_UP | IFF_RUNNING);
-	printf("S21 USB: ue0 192.168.7.2/24 %s (err %d)\n", err ? "NOT configured" : "up", err);
+	ulog("S21 USB: ue0 192.168.7.2/24 %s (err %d)\n", err ? "NOT configured" : "up", err);
 }
 
 static void
@@ -624,7 +654,7 @@ ud_event(uint32_t ev)
 		uint32_t type = (ev >> 8) & 0xf;
 		if (type == 1) {        /* USB reset */
 			dwc_wr(DCFG, dwc_rd(DCFG) & ~(0x7fu << 3));
-			printf("S21 USB: bus reset\n");
+			ulog("S21 USB: bus reset\n");
 		} else if (type == 2) { /* connect done */
 			uint32_t speed = dwc_rd(DSTS) & 7;
 			/* ep0 max packet: 64 at high/full speed (modify action) */
@@ -632,9 +662,9 @@ ud_event(uint32_t ev)
 			    (1u << 8) | (1u << 10) | (0u << 25), 0);
 			ud_epcmd(1, DEPCMD_SETEPCONFIG, (0u << 1) | (64u << 3) | (2u << 30),
 			    (1u << 8) | (1u << 10) | (1u << 25), 0);
-			printf("S21 USB: connected, speed %u\n", speed);
+			ulog("S21 USB: connected, speed %u\n", speed);
 		} else if (type == 0) {
-			printf("S21 USB: disconnect\n");
+			ulog("S21 USB: disconnect\n");
 		}
 		return;
 	}
@@ -700,14 +730,14 @@ ud_thread(void *arg __unused, wait_result_t wr __unused)
 				uint32_t ev = *(volatile uint32_t *)(ud.dma + UD_EVT + ud.evt_pos);
 				ud.evt_pos = (ud.evt_pos + 4) % UD_EVT_SIZE;
 				if (ud.events++ < 200) {
-					printf("S21 USB: event 0x%08x\n", ev);
+					ulog("S21 USB: event 0x%08x\n", ev);
 				}
 				ud_event(ev);
 			}
 			dwc_wr(GEVNTCOUNT, count);
 		}
 		if ((++ticks % 30000) == 0) {
-			printf("S21 USB: ue0 rx %llu tx %llu frames\n", ud.rx_frames, ud.tx_frames);
+			ulog("S21 USB: ue0 rx %llu tx %llu frames\n", ud.rx_frames, ud.tx_frames);
 		}
 		ud_sleep_ms(1);
 	}
@@ -765,39 +795,105 @@ sweet_log_copy(uint64_t *pos __unused, char *out, uint32_t max)
 	return n;
 }
 
+static const uint8_t ud_host_mac[ETHER_ADDR_LEN] = { 0x02, 0x00, 0x5e, 0x77, 0xee, 0x01 };
+
+/* Build one Ethernet/IPv4/UDP frame by hand and queue it on the bulk IN
+ * endpoint: no sockets, routes or ARP involved. 192.168.7.2 -> 192.168.7.1:5140 */
+static void
+ud_send_udp(const char *buf, uint32_t n)
+{
+	uint8_t f[14 + 20 + 8 + 1200];
+	uint32_t i, sum = 0;
+
+	if (n == 0 || !ud.configured) {
+		return;
+	}
+	if (n > 1200) {
+		n = 1200;
+	}
+	uint32_t ip_len = 20 + 8 + n, len = 14 + ip_len, ulen = 8 + n;
+	memcpy(f, ud_host_mac, 6);
+	memcpy(f + 6, ud_phone_mac, 6);
+	f[12] = 0x08; f[13] = 0x00;
+	uint8_t *ip = f + 14;
+	ip[0] = 0x45; ip[1] = 0; ip[2] = (uint8_t)(ip_len >> 8); ip[3] = (uint8_t)ip_len;
+	ip[4] = 0; ip[5] = 0; ip[6] = 0x40; ip[7] = 0; ip[8] = 64; ip[9] = 17; ip[10] = 0; ip[11] = 0;
+	ip[12] = 192; ip[13] = 168; ip[14] = 7; ip[15] = 2;
+	ip[16] = 192; ip[17] = 168; ip[18] = 7; ip[19] = 1;
+	for (i = 0; i < 20; i += 2) {
+		sum += (uint32_t)(ip[i] << 8 | ip[i + 1]);
+	}
+	while (sum >> 16) {
+		sum = (sum & 0xffff) + (sum >> 16);
+	}
+	sum = ~sum & 0xffff;
+	ip[10] = (uint8_t)(sum >> 8); ip[11] = (uint8_t)sum;
+	uint8_t *u = ip + 20;
+	u[0] = 5140 >> 8; u[1] = 5140 & 0xff; u[2] = 5140 >> 8; u[3] = 5140 & 0xff;
+	u[4] = (uint8_t)(ulen >> 8); u[5] = (uint8_t)ulen; u[6] = 0; u[7] = 0;     /* checksum 0 = none */
+	memcpy(u + 8, buf, n);
+
+	mbuf_t m = NULL;
+	if (mbuf_gethdr(MBUF_DONTWAIT, MBUF_TYPE_DATA, &m) != 0) {
+		return;
+	}
+	if (mbuf_mclget(MBUF_DONTWAIT, MBUF_TYPE_DATA, &m) != 0 || !(mbuf_flags(m) & MBUF_EXT) ||
+	    mbuf_maxlen(m) < len) {
+		mbuf_freem(m);
+		return;
+	}
+	memcpy(mbuf_data(m), f, len);
+	mbuf_setlen(m, len);
+	mbuf_pkthdr_setlen(m, len);
+	lck_mtx_lock(ud.lock);
+	if (ud.txq_count == UD_TXQ) {
+		lck_mtx_unlock(ud.lock);
+		mbuf_freem(m);
+		return;
+	}
+	ud.txq[(ud.txq_head + ud.txq_count) % UD_TXQ] = m;
+	ud.txq_count++;
+	ud_tx_kick_locked();
+	lck_mtx_unlock(ud.lock);
+}
+
 static void
 ud_log_thread(void *arg __unused, wait_result_t wr __unused)
 {
-	static char chunk[1400];
-	socket_t so = NULL;
-	struct sockaddr_in to;
-	uint64_t pos = sweet_log_position();
+	static char chunk[1200];
+	uint64_t upos = 0, kpos = sweet_log_position();
+	uint32_t beat = 0, tick = 0;
 
-	pos = pos > 65536 ? pos - 65536 : 0;
-	bzero(&to, sizeof(to));
-	to.sin_len = sizeof(to);
-	to.sin_family = AF_INET;
-	to.sin_port = htons(5140);
-	to.sin_addr.s_addr = htonl(0xc0a80701);         /* 192.168.7.1 */
+	kpos = kpos > 65536 ? kpos - 65536 : 0;
 	for (;;) {
 		ud_sleep_ms(100);
-		if (!ud.configured) {
+		if (!ud.configured || ud.data_alt != 1) {
 			continue;
 		}
-		if (so == NULL && sock_socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP, NULL, NULL, &so) != 0) {
-			so = NULL;
-			continue;
+		/* 1. this driver's own messages */
+		uint64_t total = __atomic_load_n(&ulog_total, __ATOMIC_RELAXED);
+		if (total - upos > ULOG_SIZE) {
+			upos = total - ULOG_SIZE;
 		}
+		while (upos < total) {
+			uint32_t n = (uint32_t)MIN((uint64_t)sizeof(chunk), total - upos);
+			for (uint32_t i = 0; i < n; i++) {
+				chunk[i] = ulog_ring[(upos + i) % ULOG_SIZE];
+			}
+			upos += n;
+			ud_send_udp(chunk, n);
+		}
+		/* 2. the kernel's own log, when a source exists */
 		uint32_t n;
-		while ((n = sweet_log_copy(&pos, chunk, sizeof(chunk))) > 0) {
-			struct iovec iov = { .iov_base = chunk, .iov_len = n };
-			struct msghdr msg = {
-				.msg_name = &to, .msg_namelen = sizeof(to),
-				.msg_iov = &iov, .msg_iovlen = 1,
-			};
-			size_t sent = 0;
-			if (sock_send(so, &msg, 0, &sent) != 0) {
-				break;          /* no route/ARP yet: retry later */
+		while ((n = sweet_log_copy(&kpos, chunk, sizeof(chunk))) > 0) {
+			ud_send_udp(chunk, n);
+		}
+		/* 3. heartbeat once a second */
+		if ((++tick % 10) == 0) {
+			int hn = snprintf(chunk, sizeof(chunk), "S21 USB hb %u rx %llu tx %llu\n",
+			    ++beat, ud.rx_frames, ud.tx_frames);
+			if (hn > 0) {
+				ud_send_udp(chunk, (uint32_t)hn);
 			}
 		}
 	}
@@ -811,7 +907,7 @@ s21usb_gadget_start(vm_offset_t dwc)
 	ud.dwc = dwc;
 	if (kmem_alloc_contig(kernel_map, &ud.dma, UD_SIZE, PAGE_MASK, 0, 0,
 	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
-		printf("S21 USB: no DMA memory\n");
+		ulog("S21 USB: no DMA memory\n");
 		return;
 	}
 	ppnum_t pn = pmap_find_phys(kernel_pmap, (addr64_t)ud.dma);
@@ -822,7 +918,7 @@ s21usb_gadget_start(vm_offset_t dwc)
 	ud_if_create();
 
 	/* Host -> device: GCTL.PRTCAPDIR (bits 13:12) = 2, then reset the device core. */
-	printf("S21 USB: GCTL before 0x%08x\n", usb_rd(dwc, GCTL));
+	ulog("S21 USB: GCTL before 0x%08x\n", usb_rd(dwc, GCTL));
 	dwc_wr(GCTL, (dwc_rd(GCTL) & ~(3u << 12)) | (2u << 12));
 	delay(1000);
 	/* Device controller soft reset (PHY stays as s21usb_init / the previous OS left it). */
@@ -831,7 +927,7 @@ s21usb_gadget_start(vm_offset_t dwc)
 	for (i = 0; i < 500 && (dwc_rd(DCTL) & DCTL_CSFTRST); i++) {
 		delay(1000);
 	}
-	printf("S21 USB: soft reset %s after %d ms, GCTL 0x%08x DCFG 0x%08x\n",
+	ulog("S21 USB: soft reset %s after %d ms, GCTL 0x%08x DCFG 0x%08x\n",
 	    (dwc_rd(DCTL) & DCTL_CSFTRST) ? "STUCK" : "done", i, dwc_rd(GCTL), dwc_rd(DCFG));
 	if (dwc_rd(DCTL) & DCTL_CSFTRST) {
 		return;
@@ -855,7 +951,7 @@ s21usb_gadget_start(vm_offset_t dwc)
 	    ud_epcmd(0, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0) ||
 	    ud_epcmd(1, DEPCMD_SETEPCONFIG, (0u << 1) | (512u << 3), (1u << 8) | (1u << 10) | (1u << 25), 0) ||
 	    ud_epcmd(1, DEPCMD_SETTRANSFRESOURCE, 1, 0, 0)) {
-		printf("S21 USB: endpoint 0 setup failed\n");
+		ulog("S21 USB: endpoint 0 setup failed\n");
 		return;
 	}
 	dwc_wr(DALEPENA, 0x3);
@@ -865,7 +961,7 @@ s21usb_gadget_start(vm_offset_t dwc)
 	for (i = 0; i < 500 && (dwc_rd(DSTS) & DSTS_DEVCTRLHLT); i++) {
 		delay(1000);
 	}
-	printf("S21 USB: running (DSTS 0x%08x after %d ms), DMA at 0x%llx\n", dwc_rd(DSTS), i, ud.dma_pa);
+	ulog("S21 USB: running (DSTS 0x%08x after %d ms), DMA at 0x%llx\n", dwc_rd(DSTS), i, ud.dma_pa);
 	if (kernel_thread_start(ud_thread, NULL, &thread) == KERN_SUCCESS) {
 		thread_deallocate(thread);
 	}
