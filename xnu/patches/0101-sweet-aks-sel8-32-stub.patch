@@ -1,0 +1,13 @@
+diff --git a/iokit/Kernel/arm/SweetKeyStore.cpp b/iokit/Kernel/arm/SweetKeyStore.cpp
+index d11fe26..e3fc757 100644
+--- a/iokit/Kernel/arm/SweetKeyStore.cpp
++++ b/iokit/Kernel/arm/SweetKeyStore.cpp
+@@ -79,2 +79,3 @@ AppleKeyStore::start(IOService *provider)
+ 	IOLog("SWEET AKS: AppleKeyStore registered (no passcode, unlocked)\n");
++	IOLog("SWEET AKS: 0101 sel 8/32 no-op\n");
+ 	return true;
+@@ -197,2 +198,4 @@ AppleKeyStoreUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
+ 	case kAKSNotifyStateSet:
++	case 8:  /* 0101: unknown, one scalar in */
++	case 32: /* 0101: unknown, one scalar in */
+ 		args->scalarOutputCount = 0;
