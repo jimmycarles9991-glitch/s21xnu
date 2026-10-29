@@ -41,7 +41,7 @@ diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/sweet_ufs.c
-@@ -0,0 +1,2391 @@
+@@ -0,0 +1,2392 @@
 +/*
 + * SWEET internal UFS root device (read-only), Samsung Exynos 2100 (S21).
 + *
@@ -338,6 +338,7 @@ new file mode 100644
 +	return 0;
 +}
 +
++/* The 16 GiB root currently maps to 7280 extents. */
 +static uint32_t su_ext[3 * 8192];
 +static unsigned int su_next;
 +
