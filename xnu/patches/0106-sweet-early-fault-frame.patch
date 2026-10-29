@@ -1,18 +1,20 @@
 --- a/osfmk/arm64/sleh.c
 +++ b/osfmk/arm64/sleh.c
-@@ -526,4 +526,9 @@
+@@ -526,4 +526,11 @@
  	default:
 +#if defined(SWEET)
++	{
 +		/* Capture the interrupted caller before panic handling uses per-CPU state. */
 +		extern void sweet_early_trace_frame(uint64_t fp);
 +		sweet_early_trace_frame((uint64_t)state->fp);
++	}
 +#endif
-		panic_with_thread_kernel_state("Synchronous exception taken while SP1 selected", state);
+ 		panic_with_thread_kernel_state("Synchronous exception taken while SP1 selected", state);
  	}
  }
 --- a/osfmk/arm64/sweet_early.c
 +++ b/osfmk/arm64/sweet_early.c
-@@ -12,1 +12,34 @@
+@@ -12,1 +12,36 @@
  #include <kern/misc_protos.h>
 +
 +static void
