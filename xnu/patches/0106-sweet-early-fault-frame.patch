@@ -1,0 +1,51 @@
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -526,4 +526,9 @@
+ 	default:
++#if defined(SWEET)
++		/* Capture the interrupted caller before panic handling uses per-CPU state. */
++		extern void sweet_early_trace_frame(uint64_t fp);
++		sweet_early_trace_frame((uint64_t)state->fp);
++#endif
+ 		panic_with_thread_kernel_state(msg: "Synchronous exception taken while SP1 selected", ss: state);
+ 	}
+ }
+--- a/osfmk/arm64/sweet_early.c
++++ b/osfmk/arm64/sweet_early.c
+@@ -12,1 +12,34 @@
+ #include <kern/misc_protos.h>
++
++static void
++sweet_early_trace_string(const char *s)
++{
++	while (*s) {
++		sweet_early_putc(*s++);
++	}
++}
++
++static void
++sweet_early_trace_hex(uint64_t value)
++{
++	static const char digits[] = "0123456789abcdef";
++	for (int shift = 60; shift >= 0; shift -= 4) {
++		sweet_early_putc(digits[(value >> shift) & 0xf]);
++	}
++}
++
++void
++sweet_early_trace_frame(uint64_t fp)
++{
++	sweet_early_trace_string("\nSWEET EARLY FRAME fp=0x");
++	sweet_early_trace_hex(fp);
++	if ((fp & 0xf) != 0) {
++		sweet_early_trace_string(" (unaligned)\n");
++		return;
++	}
++	const uint64_t *frame = (const uint64_t *)(uintptr_t)fp;
++	sweet_early_trace_string(" prev=0x");
++	sweet_early_trace_hex(frame[0]);
++	sweet_early_trace_string(" caller=0x");
++	sweet_early_trace_hex(frame[1]);
++	sweet_early_putc('\n');
++	__asm__ volatile("dsb sy" ::: "memory");
++}
