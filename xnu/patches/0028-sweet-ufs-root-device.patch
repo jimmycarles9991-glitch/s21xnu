@@ -41,7 +41,7 @@ diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/sweet_ufs.c
-@@ -0,0 +1,2390 @@
+@@ -0,0 +1,2391 @@
 +/*
 + * SWEET internal UFS root device (read-only), Samsung Exynos 2100 (S21).
 + *
@@ -338,7 +338,7 @@ new file mode 100644
 +	return 0;
 +}
 +
-+static uint32_t su_ext[3 * 4096];
++static uint32_t su_ext[3 * 8192];
 +static unsigned int su_next;
 +
 +/* READ(10) of count device blocks at lba into the bounce buffer. */
@@ -2380,6 +2380,7 @@ new file mode 100644
 +	{
 +		const uint32_t *mp = NULL;
 +		unsigned int msz = 0;
++		SULOG("SWEET UFS: extent cap 8192\n");
 +		if (SecureDTGetProperty(node, "ufsmap", (void const **)&mp, &msz) == kSuccess) {
 +			uint64_t tot = 0;
 +			if (msz < 12 || msz % 12 || msz > sizeof(su_ext)) {
