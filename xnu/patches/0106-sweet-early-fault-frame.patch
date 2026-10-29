@@ -7,7 +7,7 @@
 +		extern void sweet_early_trace_frame(uint64_t fp);
 +		sweet_early_trace_frame((uint64_t)state->fp);
 +#endif
- 		panic_with_thread_kernel_state(msg: "Synchronous exception taken while SP1 selected", ss: state);
+		panic_with_thread_kernel_state("Synchronous exception taken while SP1 selected", state);
  	}
  }
 --- a/osfmk/arm64/sweet_early.c
