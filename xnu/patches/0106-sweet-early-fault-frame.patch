@@ -14,7 +14,7 @@
  }
 --- a/osfmk/arm64/sweet_early.c
 +++ b/osfmk/arm64/sweet_early.c
-@@ -12,1 +12,36 @@
+@@ -11,1 +11,36 @@
  #include <kern/misc_protos.h>
 +
 +static void
