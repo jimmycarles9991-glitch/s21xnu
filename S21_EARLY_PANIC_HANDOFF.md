@@ -1,6 +1,6 @@
 # S21+ iOS Port: Current Handoff
 
-Updated 2026-10-29. This note captures the S21+ setup-skip investigation and the current early-kernel panic diagnostic. The main project history is in `NOTES.md`.
+Updated 2026-10-30. This note captures the S21+ setup-skip investigation and the current early-kernel panic diagnostic. The main project history is in `NOTES.md`.
 
 ## Goal and device
 
@@ -39,12 +39,12 @@ Updated 2026-10-29. This note captures the S21+ setup-skip investigation and the
   - `40952558826`: successful build, but 0106 was skipped because its panic-call syntax did not match XNU 8796.
   - `40954669761`: cancelled after the patch was reported malformed.
   - `40955455764`: the `sleh.c` hunk applied, but the helper insertion hunk missed `sweet_early.c` by one line; cancelled.
-- Corrected the helper insertion from line 12 to line 11 in commit `51946b2`. The latest run is **40956410872**, queued at the last check. The latest local handoff commit is `1914675`; the diagnostic change itself is committed and pushed to `jimmycarles9991-glitch/s21xnu`.
+- Corrected the helper insertion from line 12 to line 11 in commit `51946b2`. Run **40956410872** ended before acquiring a runner: GitHub annotated “The job was not acquired by Runner of type hosted even after multiple attempts,” with additional notice of macOS ARM capacity constraints. It did not build or validate the patch. Workflow `runs-on` is changed to `macos-15-intel`; its installed Xcode 16.0 is selected by the existing version sort, retaining the known-good Xcode ABI. This runner change and corrected handoff are not yet pushed.
 - Do not boot any artifact until logs confirm both 0106 hunks applied and the kernel contains `SWEET EARLY FRAME` plus `_sweet_early_trace_frame`. Then verify the artifact checksum, prepare a temporary kexec payload, and use the printed caller LR with `ipsw macho a2s` to identify the startup path.
 
 ## Next actions
 
-1. Check Actions run `40956410872` and its patch-application logs. If either hunk is skipped or compilation fails, fix only that patch and rebuild.
+1. Push the Intel-runner workflow change to trigger a fresh build; inspect patch-application output. If either hunk is skipped or compilation fails, fix only that patch and rebuild.
 2. If it builds, download the artifact, verify its `SHA256SUMS`, trace marker, and function symbol/disassembly. Do not use the failed artifacts above.
 3. With the phone in Arch, run the temporary kexec diagnostic kernel (no userdata rewrite or partition write), capture the early frame/caller line, and map the LR in the exact kernel.
 4. Inspect that caller's startup path and only then decide whether `machine_set_current_thread` ordering or another path needs a code change.

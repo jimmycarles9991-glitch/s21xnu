@@ -34,9 +34,10 @@ env:
 
 jobs:
   build:
-    # macOS 14 is in GitHub's scheduled brownout/deprecation window.
-    # macos-15 defaults to Xcode 16.4; this tests the known IIG ABI concern.
-    runs-on: macos-15
+    # Use the Intel macOS 15 pool: the arm64 macOS 15 hosted pool repeatedly
+    # failed to acquire a runner during the early-fault diagnostic build.
+    # Xcode 16.0 is still selected below, preserving the known-good toolchain.
+    runs-on: macos-15-intel
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
