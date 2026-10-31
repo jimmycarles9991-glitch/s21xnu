@@ -1,13 +1,15 @@
 --- a/osfmk/arm64/sleh.c
 +++ b/osfmk/arm64/sleh.c
-@@ -520,6 +520,11 @@
+@@ -520,6 +520,13 @@
  	}
  		OS_FALLTHROUGH; // panic if we return from the debugger
  	default:
 +#if defined(SWEET)
-+		/* Capture the interrupted caller before panic handling uses per-CPU state. */
-+		extern void sweet_early_trace_frame(uint64_t fp);
-+		sweet_early_trace_frame((uint64_t)state->fp);
++		{
++			/* Capture the interrupted caller before panic handling uses per-CPU state. */
++			extern void sweet_early_trace_frame(uint64_t fp);
++			sweet_early_trace_frame((uint64_t)get_saved_state_fp(state));
++		}
 +#endif
  		panic_with_thread_kernel_state("Synchronous exception taken while SP1 selected", state);
  	}
