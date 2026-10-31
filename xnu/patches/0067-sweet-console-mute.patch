@@ -1,12 +1,14 @@
 --- a/osfmk/console/serial_console.c
 +++ b/osfmk/console/serial_console.c
-@@ -276,1 +276,5 @@
+@@ -250,3 +250,7 @@
 +/* Set after first swap to keep kernel text off the GUI. */
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
 +int sweet_console_muted;
 +#endif
  static inline void
-@@ -281,1 +285,4 @@
+ _cnputs(char *c, int size, bool poll)
+ {
+@@ -253,1 +257,4 @@ _cnputs(char *c, int size, bool poll)
 -	extern int disableConsoleOutput;
 +	extern int disableConsoleOutput;
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
