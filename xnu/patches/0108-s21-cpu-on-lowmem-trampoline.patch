@@ -1,7 +1,15 @@
 diff -ruN a/iokit/Kernel/arm/SweetCPU.cpp b/iokit/Kernel/arm/SweetCPU.cpp
 --- a/iokit/Kernel/arm/SweetCPU.cpp	2026-10-31 16:05:35.232020579 +0000
-+++ b/iokit/Kernel/arm/SweetCPU.cpp	2026-10-31 16:05:35.326875283 +0000
-@@ -242,6 +242,23 @@
++++ b/iokit/Kernel/arm/SweetCPU.cpp	2026-10-31 16:23:28.215825940 +0000
+@@ -19,6 +19,7 @@
+ #include <pexpert/pexpert.h>
+ 
+ extern "C" void sweet_secondary_entry(void);
++extern "C" vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ extern "C" boolean_t sweet_cpu_signal_is_enabled(unsigned int cpu);
+ 
+ class SweetCPU;
+@@ -242,6 +243,22 @@
  	IOLog("SWEET CPU: cpu=%u CPU_ON target=0x%x entry_pa=0x%llx context=%u\n",
  	    getCPUNumber(), cpu->phys_id, (uint64_t)entry, getCPUNumber());
  	__builtin_arm_dsb(DSB_SY);
@@ -9,7 +17,6 @@ diff -ruN a/iokit/Kernel/arm/SweetCPU.cpp b/iokit/Kernel/arm/SweetCPU.cpp
 +	 * used an entry below 4 GB. Park a 16-byte trampoline in dead low RAM (old shim image)
 +	 * and give the hypervisor that address; it just jumps to the real entry. */
 +	{
-+		extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
 +		const uint64_t tramp_pa = 0x80300000ULL;
 +		volatile uint32_t *t = (volatile uint32_t *)ml_io_map((vm_offset_t)tramp_pa, 0x4000);
 +		if (t != NULL) {
