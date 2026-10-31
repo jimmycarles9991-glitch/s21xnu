@@ -75,6 +75,11 @@ jobs:
           MAKEFLAGS: ${{ inputs.keep_going == 'false' && '' || '-k' }}
         run: bash build.sh
 
+      - name: Verify early panic frame hook
+        run: |
+          grep -q 'sweet_early_trace_frame' dxb/xnu/osfmk/arm64/sleh.c
+          xcrun nm -gU dxb/fakeroot/System/Library/Kernels/kernel.development.sweet | grep -q '_sweet_early_trace_frame'
+
       - name: Package build tree for local compiles
         if: always()
         run: |

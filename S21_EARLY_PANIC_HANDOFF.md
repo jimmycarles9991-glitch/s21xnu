@@ -1,6 +1,6 @@
 # S21+ iOS Port: Current Handoff
 
-Updated 2026-10-30. This note captures the S21+ setup-skip investigation and the current early-kernel panic diagnostic. The main project history is in `NOTES.md`.
+Updated 2026-10-31. This note captures the S21+ setup-skip investigation and the current early-kernel panic diagnostic. The main project history is in `NOTES.md`.
 
 ## Goal and device
 
@@ -39,12 +39,13 @@ Updated 2026-10-30. This note captures the S21+ setup-skip investigation and the
   - `40952558826`: successful build, but 0106 was skipped because its panic-call syntax did not match XNU 8796.
   - `40954669761`: cancelled after the patch was reported malformed.
   - `40955455764`: the `sleh.c` hunk applied, but the helper insertion hunk missed `sweet_early.c` by one line; cancelled.
-- Corrected the helper insertion from line 12 to line 11 in commit `51946b2`. Run **40956410872** ended before acquiring a runner: GitHub annotated “The job was not acquired by Runner of type hosted even after multiple attempts,” with additional notice of macOS ARM capacity constraints. It did not build or validate the patch. Workflow `runs-on` is changed to `macos-15-intel`; its installed Xcode 16.0 is selected by the existing version sort, retaining the known-good Xcode ABI. This runner change and corrected handoff are not yet pushed.
-- Do not boot any artifact until logs confirm both 0106 hunks applied and the kernel contains `SWEET EARLY FRAME` plus `_sweet_early_trace_frame`. Then verify the artifact checksum, prepare a temporary kexec payload, and use the printed caller LR with `ipsw macho a2s` to identify the startup path.
+- Corrected the helper insertion to line 11 in commit `51946b2`, but the actual post-0012 `sweet_early.c` has the `kern/misc_protos.h` include on line 12. Run **40956410872** ended before acquiring a runner due to macOS ARM capacity constraints. Run **41147646499** succeeded on the Intel runner, but its kernel SHA-256 is `f30be6960dea9bed314b520582fac078db8d8357c8b1849371335677a3a26dd0`; the artifact contains the UFS extent-cap marker and does not contain `_sweet_early_trace_frame`. Its log confirms patch 0106 was skipped atomically because the helper hunk failed at `sweet_early.c:11`. The patch now uses exact context from the post-0012 source and passes `git apply --check` against the buildtree. CI requires the helper call in patched source and the compiled symbol. The artifact must not be booted for this diagnostic.
+- The source phrase `SWEET EARLY FRAME` is lowered into immediate character writes by this compiler, so it is not a reliable `strings` marker. Verify `_sweet_early_trace_frame` and inspect its disassembly before boot instead.
+- Do not boot any artifact until logs confirm both 0106 hunks applied and the kernel contains `_sweet_early_trace_frame`. Then verify the artifact checksum, prepare a temporary kexec payload, and use the printed caller LR with `ipsw macho a2s` to identify the startup path.
 
 ## Next actions
 
-1. Push the Intel-runner workflow change to trigger a fresh build; inspect patch-application output. If either hunk is skipped or compilation fails, fix only that patch and rebuild.
+1. Push the corrected patch and CI guard to trigger a fresh build; verify both source and symbol checks pass.
 2. If it builds, download the artifact, verify its `SHA256SUMS`, trace marker, and function symbol/disassembly. Do not use the failed artifacts above.
 3. With the phone in Arch, run the temporary kexec diagnostic kernel (no userdata rewrite or partition write), capture the early frame/caller line, and map the LR in the exact kernel.
 4. Inspect that caller's startup path and only then decide whether `machine_set_current_thread` ordering or another path needs a code change.

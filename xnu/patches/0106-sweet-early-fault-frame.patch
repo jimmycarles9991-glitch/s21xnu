@@ -1,20 +1,22 @@
 --- a/osfmk/arm64/sleh.c
 +++ b/osfmk/arm64/sleh.c
-@@ -526,4 +526,11 @@
+@@ -520,6 +520,11 @@
+ 	}
+ 		OS_FALLTHROUGH; // panic if we return from the debugger
  	default:
 +#if defined(SWEET)
-+	{
 +		/* Capture the interrupted caller before panic handling uses per-CPU state. */
 +		extern void sweet_early_trace_frame(uint64_t fp);
 +		sweet_early_trace_frame((uint64_t)state->fp);
-+	}
 +#endif
  		panic_with_thread_kernel_state("Synchronous exception taken while SP1 selected", state);
  	}
  }
 --- a/osfmk/arm64/sweet_early.c
 +++ b/osfmk/arm64/sweet_early.c
-@@ -11,1 +11,36 @@
+@@ -10,6 +10,41 @@
+ #if defined(SWEET)
+ #include <stdint.h>
  #include <kern/misc_protos.h>
 +
 +static void
@@ -51,3 +53,6 @@
 +	sweet_early_putc('\n');
 +	__asm__ volatile("dsb sy" ::: "memory");
 +}
+ 
+ static volatile uint32_t *early_fb = (volatile uint32_t *)(uintptr_t)0xfa000000;
+ #define EARLY_FB early_fb
