@@ -1,21 +1,39 @@
+diff --git a/osfmk/console/serial_console.c b/osfmk/console/serial_console.c
+index e5b23f2..9792401 100644
 --- a/osfmk/console/serial_console.c
 +++ b/osfmk/console/serial_console.c
-@@ -250,4 +250,11 @@
-+/* Set after first swap to keep kernel text off the GUI. */
+@@ -266,11 +266,28 @@ _cnputc(char c, bool poll)
+  *             waiting for an interrupt when the hardware device isn't ready
+  * @param size The number of characters to print to the console.
+  */
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
++extern unsigned panic_active(void);
++/*
++ * Set by AppleCLCD (boot-arg sweetfb_noconsole=1) once the GUI presents:
++ * console text is no longer drawn over the GUI, a panic draws again. This
++ * replaces PE_initialize_console(kPEDisableScreen), whose console switch
++ * writes the SECURITY_READ_ONLY_LATE cons_ops_index and faults.
++ */
 +int sweet_console_muted;
 +#endif
++
  static inline void
  _cnputs(char *c, int size, bool poll)
  {
--	extern int disableConsoleOutput;
-+	extern int disableConsoleOutput;
+ 	extern int disableConsoleOutput;
+ 
 +#if defined(ARM64_BOARD_CONFIG_SWEET)
-+	if (sweet_console_muted && !panic_active()) return;
++	if (sweet_console_muted && !panic_active()) {
++		return;
++	}
 +#endif
++
+ 	if (disableConsoleOutput) {
+ 		return;
+ 	}
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
-@@ -26,11 +26,13 @@
+@@ -31,11 +31,13 @@
   *
   * The panel memory itself is published as an IOSurface and returned as the
   * default framebuffer surface. The kernel text console keeps drawing over
@@ -31,7 +49,7 @@
  #if defined(SWEET)
  #include <IOKit/IOService.h>
  #include <IOKit/IOUserClient.h>
-@@ -290,8 +292,7 @@
+@@ -316,9 +318,8 @@
  		int quiet = 0;
  		fConsolePaused = true;
  		if (PE_parse_boot_argn("sweetfb_noconsole", &quiet, sizeof(quiet)) && quiet != 0) {
@@ -42,3 +60,4 @@
 +			sweet_console_muted = 1;
  		}
  	}
+ 

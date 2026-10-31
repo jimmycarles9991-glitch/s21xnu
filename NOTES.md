@@ -1,5 +1,12 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## Console-mute panic: root cause + fix (2026-10-31)
+- IMG_0463 = same panic as IMG_0462 (PC 0xfffffe000745b690 `_switch_to_serial_console+0x1c`, FAR `_cons_ops_index`, LR `_PE_initialize_console+0x58`): booted kernel still has the old `PE_initialize_console(kPEDisableScreen)` path, i.e. **0067 was not applied**. Writing `cons_ops_index` (SECURITY_READ_ONLY_LATE on arm) faults. Boot WITHOUT `sweetfb_noconsole=1` as a stopgap.
+- Why 0067 kept being skipped: (1) old hunk headers did not match their bodies (malformed), (2) it anchored on `sweet_log_append` from patch 0047, but on S21 0047 never applies (the S21 `bsd/dev/sweet_ufs.c` from 0028 is Exynos-specific, so Qualcomm-era 0030/0034/0047/0054/0060/0069/0077/0082 fail `git apply --check` and are silently skipped by dxb).
+- New 0067 is generated with git/diff against real xnu-8796.141.3 (replayed chain), depends only on pristine `_cnputs` and patch 0046's SweetFramebuffer.cpp; `git apply --check` passes, result byte-identical to the edited tree. Adds `int sweet_console_muted` + early return in `_cnputs` unless `panic_active()`. CI now greps source and `nm`s for `_sweet_console_muted`.
+- Next: push, run CI, verify `_sweet_console_muted` (boot0104.sh already guards), boot with `sweetfb_noconsole=1`. Note: the silent-skip list above means the S21 kernel has no persistent log/UFS-fast/touch-driver patches; port those to the Exynos sweet_ufs.c if wanted.
+
+
 ## UFS root journal write failure (2026-10-31)
 - User photo shows HFS journal-header writes failing with strategy error `0x1e` (`EROFS`), followed by root mount retries. The ZIP from the first rebuild still lacked all `ufsov` strings, so that boot could not enable writes.
 - Root cause confirmed in Actions run `41199990933` logs: patch 0084 was skipped as “corrupt patch at line 26.” The prior edit added a line to a unified diff without adjusting its hunk count. Corrected its header from `+96,19` to `+96,20` in commit `57d2447`, pushed to `jimmycarles9991-glitch/s21xnu:s21-stage2`.

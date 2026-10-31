@@ -79,6 +79,10 @@ jobs:
         run: |
           grep -q 'sweet_early_trace_frame' dxb/xnu/osfmk/arm64/sleh.c
           xcrun nm -gU dxb/fakeroot/System/Library/Kernels/kernel.development.sweet | grep -q '_sweet_early_trace_frame'
+      - name: Verify console mute (0067)
+        run: |
+          grep -q 'sweet_console_muted' dxb/xnu/osfmk/console/serial_console.c
+          xcrun nm -gU dxb/fakeroot/System/Library/Kernels/kernel.development.sweet | grep -q '_sweet_console_muted'
 
       - name: Package build tree for local compiles
         if: always()
