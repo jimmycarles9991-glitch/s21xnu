@@ -1,5 +1,11 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## S21+ Wi-Fi Stage 1 patch staged locally (2026-10-31)
+- Created `xnu/patches/0109-sweet-pcie-wifi-link.patch` from the local `sweet_pcie.c` port. It adds the PCIe host driver, registers it in `bsd/conf/files`, and calls it after the built-in HFS registration. Driver stays disabled by default (`sweetpcie=0`).
+- Linux reference bundle exists at `/home/tom/s21/wifi-port.zip`; it contains `pcie-t2s-wifi.c`, S2MPU code, brcmfmac sources/diff, DTS and NVRAM files.
+- Validation: `git apply --numstat` parses the patch (529-line new driver, one build-file line, four init lines). Could not run `git apply --check` or compile because the xnu-8796 source checkout is not present in this workspace. Attempted clone failed because sandbox DNS cannot resolve GitHub. The user requested a local commit only; do not push without a later request.
+- Next: validate against the XNU patch chain and build with CI, then boot with `sweetpcie=1` only after reviewing the applied patch and MMIO mappings. No device boot performed.
+
 ## 8-core SMP and touch bring-up (2026-10-31)
 **Result (observed by the user):** all 8 cores initialize (4x A55 MPIDR 0x000-0x300, 3x A78 0x400-0x600, 1x X1 0x700) with `cpus=8`; touch works, and swipe-up unlocks to the home screen. UI is much faster than with 1 core. Boot takes noticeably longer than with `cpus=4` (cause not investigated; bring-up starts cores one at a time with per-core waits, which is a guess). Staged boots `CPUS=2`, `CPUS=4`, `CPUS=8` all reached the lock screen/home screen. No long-run stability test has been done yet.
 

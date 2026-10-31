@@ -1,0 +1,555 @@
+diff --git a/bsd/dev/sweet_pcie.c b/bsd/dev/sweet_pcie.c
+new file mode 100644
+--- /dev/null
++++ b/bsd/dev/sweet_pcie.c
+@@ -0,0 +1,529 @@
++/*
++ * sweet_pcie.c - XNU-side bring-up of Exynos 2100 PCIe ch0 (BCM4375 Wi-Fi),
++ * Galaxy S21+ ("t2s").  Patch 0109, STAGE 1: link up + enumerate the endpoint.
++ *
++ * Straight port of the Linux glue that already works on this phone
++ * (pcie-t2s-wifi.c, derived from the Samsung 4.19 pcie-exynos-host-v0.c and
++ * pcie-exynos2100-v0-cal.c).  Register offsets/values are copied from there.
++ *
++ * Boot-arg `sweetpcie=N` (default 0 = do nothing, no MMIO touched):
++ *   1  PHY/PCIe bring-up, wait for L0, read vendor/device id of bus1:0.0
++ *   2  1 + assign endpoint BARs, enable MEM+BME, read BAR0 (chipcommon id)
++ * Optional: swpcie_gpf0=<bank offset in pinctrl@11040000> (default 0)
++ *           swpcie_gpp12=<bank offset in pinctrl@10730000> (read-only report of WL_REG_ON)
++ *
++ * NOT touched here: WL_REG_ON (gpp12-2).  Linux's gpio-hog already drove it
++ * high and kexec keeps the pin state; BT shares it.  Not ported on purpose:
++ * L1.2/ASPM, MSI, runtime PM, the "IA" CDR sequencer.
++ *
++ * Exit criterion: "SWEET PCIE: ep 14e4:4475" with the link in L0.
++ */
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <sys/types.h>
++#include <mach/vm_types.h>
++#include <mach/mach_time.h>
++#include <kern/clock.h>
++#include <pexpert/pexpert.h>
++#include <machine/machine_routines.h>
++
++extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++
++#define SWP_LOG(fmt, ...)	printf("SWEET PCIE: " fmt "\n", ##__VA_ARGS__)
++
++/* ---- physical addresses (vendor DT pcie@113B0000 / our v29+ DTS) ---------- */
++#define PA_ELBI		0x113b0000ULL
++#define PA_DBI		0x113f0000ULL
++#define PA_CFG		0x20ffe000ULL	/* cfg0 = +0, cfg1 = +0x1000 */
++#define PA_PHY		0x113e0000ULL
++#define PA_PCS		0x113d0000ULL
++#define PA_SYSREG	0x11021044ULL	/* HSI1 sysreg +0x1044 */
++#define PA_NCLK		0x11021064ULL
++#define PA_PMU		0x15860000ULL
++#define PA_PINCTRL_HSI1	0x11040000ULL
++#define PA_PINCTRL_PERIC1 0x10730000ULL
++#define PA_MEM		0x20000000ULL	/* outbound MEM window, cpu == pci */
++#define SZ_MEM		0x00ff0000ULL
++
++/* ---- ELBI --------------------------------------------------------------- */
++#define ELBI_SW_WAKE		0x018
++#define ELBI_APP_LTSSM_ENABLE	0x02c
++#define ELBI_IRQ_EN_PULSE	0x00c
++#define ELBI_IRQ_EN_LEVEL	0x010
++#define ELBI_IRQ_EN_SPECIAL	0x014
++#define ELBI_IRQ_TOE_EN_PULSE2	0x034
++#define ELBI_IRQ_TOE_EN_LEVEL	0x038
++#define ELBI_RDLH_LINKUP	0x074
++#define   LTSSM_MASK		0x1f
++#define   LTSSM_L0		0x11
++#define ELBI_APP_REQ_EXIT_L1	0x0f4
++#define ELBI_LINKDOWN_RST_SEL	0x1b8
++#define ELBI_SOFT_CORE_RESET	0x1d0
++#define ELBI_QCH_SEL		0x2c8
++#define ELBI_PHY_RST_288	0x288
++#define ELBI_PHY_RST_28C	0x28c
++#define ELBI_PHY_RST_290	0x290
++#define ELBI_PHY_RST_294	0x294
++
++/* ---- DBI (DWC) ---------------------------------------------------------- */
++#define DBI_CMD			0x004
++#define DBI_CLASS_REV		0x008
++#define DBI_BAR0		0x010
++#define DBI_BAR1		0x014
++#define DBI_BUSES		0x018
++#define DBI_MEMWIN		0x020
++#define DBI_PFWIN		0x024
++#define DBI_PFBASE_HI		0x028
++#define DBI_PFLIM_HI		0x02c
++#define DBI_IOWIN_HI		0x030
++#define DBI_CAP_PTR		0x034
++#define DBI_INTR		0x03c
++#define DBI_PORT_LINK_CTRL	0x710
++#define   PLC_DLL_LINK_EN	(1u << 5)
++#define   PLC_FAST_LINK		(1u << 7)
++#define   PLC_MODE_MASK		(0x3fu << 16)
++#define   PLC_MODE_1LANE	(0x01u << 16)
++#define DBI_LINK_WIDTH_SPEED	0x80c
++#define   LWS_WIDTH_MASK	(0x1fu << 8)
++#define   LWS_WIDTH_1		(0x01u << 8)
++#define DBI_MISC_CTRL_1		0x8bc
++#define   MISC_DBI_RO_WR_EN	(1u << 0)
++#define DBI_AUX_CLK_FREQ	0xb40
++#define DBI_L1_SUBSTATES	0xb44
++/* iATU, viewport mode (vendor: regs at 0x900) */
++#define ATU_VIEWPORT		0x900
++#define ATU_CR1			0x904
++#define ATU_CR2			0x908
++#define ATU_LBASE		0x90c
++#define ATU_UBASE		0x910
++#define ATU_LIMIT		0x914
++#define ATU_LTARGET		0x918
++#define ATU_UTARGET		0x91c
++#define   ATU_TYPE_MEM		0x0
++#define   ATU_TYPE_CFG0		0x4
++#define   ATU_ENABLE		(1u << 31)
++
++/* ---- SYSREG / PMU / PHY / PCS ------------------------------------------- */
++#define SYSREG_PCS_HS		0x00
++#define SYSREG_PHY_CONTROL	0x0c
++#define   PCS_LANE0_ENABLE	(1u << 12)
++#define NCLK_OFF_BIT		(1u << 1)
++#define PMU_TCXO_FAR		0x3e10
++#define   PMU_TCXO_FAR_BIT	(1u << 3)
++#define PMU_PHY_ISO		0x71c
++#define PHY_PLL_STATE		0xbc
++#define PCS_ELECIDLE		0xec
++
++/* ---- state -------------------------------------------------------------- */
++static struct {
++	volatile uint32_t *elbi, *dbi, *cfg, *phy, *pcs, *sysreg, *nclk, *pmu, *pin1, *pin2, *mem;
++	uint64_t bar_base[6], bar_size[6];
++	int up;
++} P;
++
++struct sweet_pcie_info {	/* for the next stages */
++	int link_up;
++	uint32_t ep_id;
++	uint64_t bar0_pa, bar0_size, bar2_pa, bar2_size;
++	volatile uint32_t *mem;	/* virtual base of the PA_MEM window */
++};
++struct sweet_pcie_info sweet_pcie_info;
++
++static inline uint32_t rd(volatile uint32_t *b, uint32_t off) { return b[off >> 2]; }
++static inline void wr(volatile uint32_t *b, uint32_t off, uint32_t v) { b[off >> 2] = v; }
++static inline void rmw(volatile uint32_t *b, uint32_t off, uint32_t clr, uint32_t set)
++{
++	wr(b, off, (rd(b, off) & ~clr) | set);
++}
++
++static void swp_udelay(uint32_t us)
++{
++	uint64_t t0 = mach_absolute_time(), d;
++
++	nanoseconds_to_absolutetime((uint64_t)us * 1000ULL, &d);
++	while (mach_absolute_time() - t0 < d)
++		;
++}
++static void swp_mdelay(uint32_t ms) { swp_udelay(ms * 1000); }
++
++static volatile uint32_t *swp_map(uint64_t pa, uint64_t sz)
++{
++	uint64_t base = pa & ~0x3fffULL;	/* 16 KiB pages */
++	uint64_t off = pa - base;
++	uint64_t len = (off + sz + 0x3fffULL) & ~0x3fffULL;
++	vm_offset_t v = ml_io_map((vm_offset_t)base, (vm_size_t)len);
++
++	return v ? (volatile uint32_t *)(v + off) : NULL;
++}
++
++/* ---- PERST# on gpf0-1 (pinctrl@11040000), guarded ----------------------- */
++#define GPIO_CON	0x0
++#define GPIO_DAT	0x4
++
++static uint32_t gpf0_off, gpp12_off;
++
++/* returns 0 on success.  Refuses to write if CON does not look like what Linux left. */
++static int swp_perst(int release)
++{
++	volatile uint32_t *b = (volatile uint32_t *)((volatile uint8_t *)P.pin1 + gpf0_off);
++	uint32_t con = rd(b, GPIO_CON);
++
++	if ((con & 0xff) != 0x12) {	/* pin0 = func 2 (CLKREQ), pin1 = func 1 (output) */
++		SWP_LOG("gpf0 CON=0x%x (want ..12): wrong bank offset 0x%x? pass swpcie_gpf0=", con, gpf0_off);
++		return -1;
++	}
++	rmw(b, GPIO_DAT, 1u << 1, release ? (1u << 1) : 0);	/* physical high = released */
++	return 0;
++}
++
++/* ---- PHY (vendor pcie-exynos2100-v0-cal.c, ch0, 26 MHz refclk, Gen2 tables) */
++static const uint8_t cmn_cfg[48] = {
++	0x01, 0xE1, 0x05, 0x00, 0x88, 0x88, 0x88, 0x0C,
++	0x91, 0x45, 0x65, 0x24, 0x33, 0x18, 0xE3, 0xFC,
++	0xD8, 0x05, 0xE6, 0x80, 0x00, 0x00, 0x00, 0x00,
++	0x60, 0x11, 0x01, 0xA0, 0x10, 0x04, 0x27, 0x88,
++	0xC0, 0xFF, 0x9B, 0x52, 0x22, 0x30, 0x4F, 0xDC,
++	0x40, 0x00, 0x00, 0x00, 0x00, 0x0B, 0x00, 0x80,
++};
++static const uint8_t trsv_cfg[80] = {
++	0x31, 0x40, 0x37, 0x99, 0x85, 0x00, 0xC0, 0xFF,
++	0xFF, 0x3F, 0x8C, 0xC8, 0x02, 0x01, 0x88, 0x80,
++	0x06, 0x90, 0x6C, 0x66, 0x09, 0x60, 0x42, 0x48,
++	0xC8, 0x50, 0x0E, 0x33, 0x58, 0xE7, 0x20, 0x22,
++	0x80, 0x38, 0x05, 0x85, 0x00, 0x00, 0x00, 0x7E,
++	0x00, 0x00, 0x55, 0x15, 0xAC, 0xAA, 0x3E, 0x00,
++	0x00, 0x00, 0x20, 0x3F, 0x00, 0x03, 0x40, 0x00,
++	0x10, 0x07, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40,
++	0x05, 0x85, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00,
++};
++
++static void phy_rx_elecidle(int ignore)
++{
++	rmw(P.pcs, PCS_ELECIDLE, 1u << 3, ignore ? (1u << 3) : 0);
++}
++
++static void phy_pwrdn_clear(void)
++{
++	rmw(P.sysreg, SYSREG_PHY_CONTROL, 0, PCS_LANE0_ENABLE);
++	rmw(P.pcs, 0x100, 1u << 6, 0);
++	rmw(P.pcs, 0x104, 1u << 7, 0);
++	wr(P.phy, 0x20 * 4, 0xc0);	/* common */
++	wr(P.phy, 0x57 * 4, 0x7e);	/* trsv */
++}
++
++static void phy_config(void)
++{
++	uint32_t v;
++	int i;
++
++	rmw(P.sysreg, SYSREG_PCS_HS, 0, 1u << 1);
++	v = rd(P.sysreg, SYSREG_PHY_CONTROL);
++	v &= ~(0xfu << 4);
++	v &= ~(0xfu << 2);
++	v |= 0x3u << 2;
++	v &= ~(1u << 1);
++	wr(P.sysreg, SYSREG_PHY_CONTROL, v);
++	rmw(P.sysreg, SYSREG_PHY_CONTROL, 0, PCS_LANE0_ENABLE);
++
++	wr(P.elbi, ELBI_PHY_RST_288, 1);
++	wr(P.elbi, ELBI_PHY_RST_290, 1);
++	wr(P.elbi, ELBI_PHY_RST_294, 1);
++	wr(P.elbi, ELBI_PHY_RST_28C, 1);
++	swp_udelay(10);
++	wr(P.elbi, ELBI_PHY_RST_288, 0);
++	wr(P.elbi, ELBI_PHY_RST_290, 0);
++	wr(P.elbi, ELBI_PHY_RST_294, 0);
++	wr(P.elbi, ELBI_PHY_RST_28C, 0);
++	swp_udelay(10);
++	wr(P.elbi, ELBI_PHY_RST_288, 1);
++
++	for (i = 0; i < (int)sizeof(cmn_cfg); i++)
++		wr(P.phy, i * 4, cmn_cfg[i]);
++	for (i = 0; i < (int)sizeof(trsv_cfg); i++)
++		wr(P.phy, (0x30 + i) * 4, trsv_cfg[i]);
++
++	wr(P.pcs, 0xf8, 0x70);
++	wr(P.pcs, 0x100, 0x87);
++	wr(P.pcs, 0x104, 0x50);
++	rmw(P.pcs, 0x0c, 1u << 1, 1u << 4);
++
++	swp_mdelay(1);
++	wr(P.elbi, ELBI_PHY_RST_290, 1);
++	wr(P.elbi, ELBI_PHY_RST_294, 1);
++	wr(P.elbi, ELBI_PHY_RST_28C, 1);
++	swp_mdelay(5);
++}
++
++/* ---- DWC root complex ----------------------------------------------------- */
++static uint32_t dbi_find_pcie_cap(void)
++{
++	uint32_t p = rd(P.dbi, DBI_CAP_PTR) & 0xff;
++	int n = 0;
++
++	while (p && n++ < 48) {
++		uint32_t h = rd(P.dbi, p & ~3u);
++		if ((h & 0xff) == 0x10)
++			return p;
++		p = (h >> 8) & 0xff;
++	}
++	return 0;
++}
++
++/* vendor exynos_pcie_setup_rc() + dw_pcie_setup()/dw_pcie_setup_rc() equivalents */
++static void rc_setup(void)
++{
++	uint32_t v, cap;
++
++	/* link mode: x1, DLL link enable, no fast link */
++	v = rd(P.dbi, DBI_PORT_LINK_CTRL);
++	v &= ~(PLC_FAST_LINK | PLC_MODE_MASK);
++	v |= PLC_DLL_LINK_EN | PLC_MODE_1LANE;
++	wr(P.dbi, DBI_PORT_LINK_CTRL, v);
++	rmw(P.dbi, DBI_LINK_WIDTH_SPEED, LWS_WIDTH_MASK, LWS_WIDTH_1);
++
++	/* max link speed Gen1 (vendor DT: max-link-speed = 1), width x1 */
++	rmw(P.dbi, DBI_MISC_CTRL_1, 0, MISC_DBI_RO_WR_EN);
++	cap = dbi_find_pcie_cap();
++	if (cap) {
++		rmw(P.dbi, cap + 0x0c, 0xf | (0x3fu << 4), 1 | (1u << 4));	/* LNKCAP: speed, MLW */
++		rmw(P.dbi, cap + 0x30, 0xf, 1);					/* LNKCTL2 target speed */
++	} else {
++		SWP_LOG("no PCIe capability in DBI cap list");
++	}
++	/* look like a PCI-PCI bridge, INTA */
++	rmw(P.dbi, DBI_CLASS_REV, 0xffffff00u, 0x06040000u);
++	rmw(P.dbi, DBI_INTR, 0xff00u, 0x0100u);
++	rmw(P.dbi, DBI_MISC_CTRL_1, MISC_DBI_RO_WR_EN, 0);
++
++	wr(P.dbi, DBI_BAR0, 0);
++	wr(P.dbi, DBI_BAR1, 0);
++	wr(P.dbi, DBI_BUSES, 0x00ff0100);	/* pri 0, sec 1, sub 255 */
++	rmw(P.dbi, DBI_CMD, 0xffff, 0x0106);	/* MEM | MASTER | SERR */
++
++	/* vendor RC tweaks */
++	wr(P.dbi, DBI_AUX_CLK_FREQ, 0x1a);	/* 26 MHz */
++	wr(P.dbi, DBI_L1_SUBSTATES, 0xea);
++}
++
++static int atu_out(uint32_t idx, uint32_t type, uint64_t cpu, uint64_t pci, uint64_t size)
++{
++	int i;
++
++	wr(P.dbi, ATU_VIEWPORT, idx);	/* outbound, region idx */
++	wr(P.dbi, ATU_LBASE, (uint32_t)cpu);
++	wr(P.dbi, ATU_UBASE, (uint32_t)(cpu >> 32));
++	wr(P.dbi, ATU_LIMIT, (uint32_t)(cpu + size - 1));
++	wr(P.dbi, ATU_LTARGET, (uint32_t)pci);
++	wr(P.dbi, ATU_UTARGET, (uint32_t)(pci >> 32));
++	wr(P.dbi, ATU_CR1, type);
++	wr(P.dbi, ATU_CR2, ATU_ENABLE);
++	for (i = 0; i < 5; i++) {
++		if (rd(P.dbi, ATU_CR2) & ATU_ENABLE)
++			return 0;
++		swp_udelay(1000);
++	}
++	return -1;
++}
++
++/* ---- config space of bus1:0.0 through the CFG0 window ----------------------- */
++static uint32_t ep_cfg_rd(uint32_t reg) { return rd(P.cfg, reg); }
++static void ep_cfg_wr(uint32_t reg, uint32_t v) { wr(P.cfg, reg, v); }
++
++static int assign_bars(void)
++{
++	uint64_t next = PA_MEM, end = PA_MEM + SZ_MEM;
++	int i;
++
++	for (i = 0; i < 6; i++) {
++		uint32_t reg = 0x10 + 4 * i, old = ep_cfg_rd(reg), v, hi = 0xffffffff;
++		uint64_t mask, size;
++		int is64;
++
++		if (old & 1)	/* I/O BAR: ignore */
++			continue;
++		ep_cfg_wr(reg, 0xffffffff);
++		v = ep_cfg_rd(reg);
++		ep_cfg_wr(reg, old);
++		if ((v & ~0xfu) == 0 || v == 0xffffffff)
++			continue;
++		is64 = ((v >> 1) & 3) == 2;
++		if (is64) {
++			uint32_t oldhi = ep_cfg_rd(reg + 4);
++			ep_cfg_wr(reg + 4, 0xffffffff);
++			hi = ep_cfg_rd(reg + 4);
++			ep_cfg_wr(reg + 4, oldhi);
++		}
++		mask = (v & ~0xfULL) | (is64 ? ((uint64_t)hi << 32) : 0xffffffff00000000ULL);
++		size = ~mask + 1;
++		next = (next + size - 1) & ~(size - 1);
++		if (next + size > end) {
++			SWP_LOG("BAR%d size 0x%llx does not fit", i, size);
++			return -1;
++		}
++		ep_cfg_wr(reg, (uint32_t)next | (v & 0xf));
++		if (is64)
++			ep_cfg_wr(reg + 4, (uint32_t)(next >> 32));
++		P.bar_base[i] = next;
++		P.bar_size[i] = size;
++		SWP_LOG("BAR%d @0x%llx size 0x%llx %s", i, next, size, is64 ? "64bit" : "32bit");
++		next += size;
++		if (is64)
++			i++;
++	}
++	/* root port memory window covers what we assigned */
++	if (next > PA_MEM) {
++		uint64_t limit = (next - 1) | 0xfffffULL;
++		wr(P.dbi, DBI_MEMWIN, (uint32_t)(((PA_MEM >> 16) & 0xfff0) | (((limit >> 16) & 0xfff0) << 16)));
++		wr(P.dbi, DBI_PFWIN, 0x0000fff0);	/* prefetch window closed (limit < base) */
++		wr(P.dbi, DBI_PFBASE_HI, 0);
++		wr(P.dbi, DBI_PFLIM_HI, 0);
++	}
++	rmw(P.dbi, DBI_CMD, 0xffff, 0x0106);
++	ep_cfg_wr(0x04, (ep_cfg_rd(0x04) & 0xffff0000u) | 0x0006);	/* MEM | BME */
++	return 0;
++}
++
++/* ---- main ------------------------------------------------------------------- */
++static int swp_bringup(int level)
++{
++	uint32_t v;
++	int i;
++
++	P.elbi = swp_map(PA_ELBI, 0x1000);
++	P.dbi = swp_map(PA_DBI, 0x1000);
++	P.cfg = swp_map(PA_CFG, 0x2000);
++	P.phy = swp_map(PA_PHY, 0x1000);
++	P.pcs = swp_map(PA_PCS, 0x1000);
++	P.sysreg = swp_map(PA_SYSREG, 0x10);
++	P.nclk = swp_map(PA_NCLK, 4);
++	P.pmu = swp_map(PA_PMU, 0x4000);
++	P.pin1 = swp_map(PA_PINCTRL_HSI1, 0x1000);
++	if (!P.elbi || !P.dbi || !P.cfg || !P.phy || !P.pcs || !P.sysreg || !P.nclk || !P.pmu || !P.pin1) {
++		SWP_LOG("ml_io_map failed");
++		return -1;
++	}
++
++	/* WL_REG_ON is not ours; report only if the bank offset was given */
++	if (gpp12_off) {
++		volatile uint32_t *b;
++
++		P.pin2 = swp_map(PA_PINCTRL_PERIC1, 0x1000);
++		if (P.pin2) {
++			b = (volatile uint32_t *)((volatile uint8_t *)P.pin2 + gpp12_off);
++			SWP_LOG("WL_REG_ON gpp12-2: CON 0x%x DAT 0x%x (want pin2 func1, high)",
++				rd(b, GPIO_CON), rd(b, GPIO_DAT));
++		}
++	}
++
++	if (swp_perst(0 /* assert */))
++		return -1;
++	SWP_LOG("PERST# asserted");
++
++	rmw(P.pmu, PMU_TCXO_FAR, 0, PMU_TCXO_FAR_BIT);
++	rmw(P.nclk, 0, NCLK_OFF_BIT, 0);
++	rmw(P.pmu, PMU_PHY_ISO, 0, 1);
++
++	phy_pwrdn_clear();
++	rmw(P.sysreg, SYSREG_PHY_CONTROL, 0, PCS_LANE0_ENABLE);
++	swp_udelay(100);
++
++	wr(P.elbi, 0x274, 0);
++	wr(P.elbi, 0x274, 0x3);
++	wr(P.elbi, 0x2bc, 0x200000);
++	wr(P.elbi, 0x2c0, 0xffffffff);
++
++	phy_rx_elecidle(1);
++	phy_config();
++	SWP_LOG("PHY configured, PLL 0x%x", rd(P.phy, PHY_PLL_STATE));
++
++	rmw(P.elbi, ELBI_SW_WAKE, 1u << 1, 0);	/* bus number enable */
++
++	wr(P.elbi, ELBI_SOFT_CORE_RESET, 0);
++	swp_udelay(20);
++	wr(P.elbi, ELBI_SOFT_CORE_RESET, 1);
++	swp_mdelay(2);
++
++	swp_perst(1);	/* release */
++	swp_mdelay(20);
++
++	rmw(P.elbi, ELBI_APP_REQ_EXIT_L1, 0, (1u << 0) | (1u << 4));
++	wr(P.elbi, ELBI_LINKDOWN_RST_SEL, 1u << 1);
++	rmw(P.elbi, ELBI_QCH_SEL, 0xfff, 0);
++	/* no interrupts yet: INTx on SPI 357 is stage 4 */
++	wr(P.elbi, ELBI_IRQ_EN_PULSE, 0);
++	wr(P.elbi, ELBI_IRQ_EN_LEVEL, 0);
++	wr(P.elbi, ELBI_IRQ_EN_SPECIAL, 0);
++	wr(P.elbi, ELBI_IRQ_TOE_EN_PULSE2, 0);
++	wr(P.elbi, ELBI_IRQ_TOE_EN_LEVEL, 0);
++
++	rc_setup();
++
++	/* start_link */
++	phy_rx_elecidle(0);
++	wr(P.elbi, ELBI_APP_LTSSM_ENABLE, 1);
++	for (i = 0; i < 12000; i++) {
++		if ((rd(P.elbi, ELBI_RDLH_LINKUP) & LTSSM_MASK) == LTSSM_L0)
++			break;
++		swp_udelay(10);
++	}
++	v = rd(P.elbi, ELBI_RDLH_LINKUP);
++	if ((v & LTSSM_MASK) != LTSSM_L0) {
++		SWP_LOG("link NOT up: LTSSM 0x%x (raw 0x%x) PLL 0x%x", v & LTSSM_MASK, v, rd(P.phy, PHY_PLL_STATE));
++		return -1;
++	}
++	P.up = 1;
++	SWP_LOG("link up (L0) after %d us, raw 0x%x", i * 10, v);
++
++	/* outbound windows: region 0 = CFG0 -> bus1:0.0, region 1 = MEM */
++	if (atu_out(0, ATU_TYPE_CFG0, PA_CFG, 1ULL << 24, 0x1000) ||
++	    atu_out(1, ATU_TYPE_MEM, PA_MEM, PA_MEM, SZ_MEM)) {
++		SWP_LOG("iATU outbound enable failed");
++		return -1;
++	}
++
++	v = ep_cfg_rd(0x00);
++	SWP_LOG("ep %04x:%04x (want 14e4:4475)", v & 0xffff, v >> 16);
++	sweet_pcie_info.link_up = 1;
++	sweet_pcie_info.ep_id = v;
++	if (v != 0x447514e4)
++		return -1;
++	SWP_LOG("ep class/rev 0x%x hdr 0x%x", ep_cfg_rd(0x08), (ep_cfg_rd(0x0c) >> 16) & 0xff);
++
++	if (level < 2)
++		return 0;
++
++	if (assign_bars())
++		return -1;
++	P.mem = swp_map(PA_MEM, SZ_MEM);
++	if (!P.mem) {
++		SWP_LOG("mem window map failed");
++		return -1;
++	}
++	sweet_pcie_info.mem = P.mem;
++	sweet_pcie_info.bar0_pa = P.bar_base[0];
++	sweet_pcie_info.bar0_size = P.bar_size[0];
++	sweet_pcie_info.bar2_pa = P.bar_base[2];
++	sweet_pcie_info.bar2_size = P.bar_size[2];
++	SWP_LOG("cmd 0x%x, BAR0 win cfg[0x80] 0x%x", ep_cfg_rd(0x04), ep_cfg_rd(0x80));
++	if (P.bar_size[0])
++		SWP_LOG("BAR0[0] = 0x%x (chipcommon id when window is default)",
++			rd(P.mem, (uint32_t)(P.bar_base[0] - PA_MEM)));
++	return 0;
++}
++
++void sweet_pcie_init(void);
++void sweet_pcie_init(void)
++{
++	uint32_t level = 0;
++	int r;
++
++	if (!PE_parse_boot_argn("sweetpcie", &level, sizeof(level)) || level == 0)
++		return;
++	PE_parse_boot_argn("swpcie_gpf0", &gpf0_off, sizeof(gpf0_off));
++	PE_parse_boot_argn("swpcie_gpp12", &gpp12_off, sizeof(gpp12_off));
++
++	SWP_LOG("stage 1 v1 level %u gpf0 off 0x%x", level, gpf0_off);
++	r = swp_bringup((int)level);
++	SWP_LOG("stage 1 %s", r ? "FAILED" : "done");
++}
+
+diff --git a/bsd/conf/files b/bsd/conf/files
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -106,3 +106,4 @@
+ bsd/dev/memdev.c			standard
++bsd/dev/sweet_pcie.c			standard
+ bsd/dev/mem.c			standard
+
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -696,4 +696,8 @@
+ 	/* HFS is built in on SWEET: register it like its kext would, before mounting root. */
+ 	extern void sweet_hfs_register(void);
+ 	sweet_hfs_register();
++	{
++		extern void sweet_pcie_init(void);
++		sweet_pcie_init();
++	}
+ #endif
