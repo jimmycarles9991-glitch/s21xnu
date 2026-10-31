@@ -1,5 +1,13 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## UFS root journal write failure (2026-10-31)
+- User photo shows HFS journal-header writes failing with strategy error `0x1e` (`EROFS`), followed by root mount retries. Boot args request `ufsov=1` and `rootrw=1`; kernel strings confirm the RAM overlay code is present. Inference: `su_ov_setup()` declined to enable the overlay because `SU_OV_MAXBLOCKS` was 2^21 (8 GiB), below the 16 GiB logical root image extent map; with overlay off, the read-only strategy returns EROFS.
+- Raised the overlay logical-block limit to 2^24 (64 GiB; at most a 64 MiB directory) in patch 0084. This should allow the current image map while keeping all writes in volatile RAM. Commit `7b96916` was pushed to `jimmycarles9991-glitch/s21xnu:s21-stage2` and verified with `git ls-remote`. CI has not run: the workflow only auto-builds on pushes to `main` or manual dispatch. Kernel rebuild and boot verification remain pending.
+
+## Kernel artifact extracted (2026-10-31)
+- User reported `kernel-xnu.zip` was ready and asked to extract it into `xnu/out` with overwrite. Extracted using overwrite mode. Archive SHA-256: `3aed895ab30f1322d9985cc9e26470f855d493d2993a9b6d951480a88167516f`.
+- Verified `xnu/out/SHA256SUMS`: `kernel.development.sweet` passes with SHA-256 `22ed095d179afe7e924503692f557a58d3ba456c6a9103515e8d147cdfcf6282` (17,194,784 bytes). No boot was performed.
+
 ## S21+ setup-skip comparison update (2026-10-29)
 - Focused bring-up handoff: [`S21_EARLY_PANIC_HANDOFF.md`](S21_EARLY_PANIC_HANDOFF.md). Run `41147646499` exposed and fixed the patch offset; run `41150347111` reached compilation but failed because `arm_saved_state_t` has no `.fp` field and the switch label needed a compound block. The diagnostic now uses `get_saved_state_fp(state)` inside a block; `git apply --check` passes against the buildtree. CI checks patched source and compiled symbol. Rebuild and boot are pending.
 - Read `ios-galaxy-s8-main.zip` (Galaxy S8/dreamlte port) and `ios-sweet-main.zip` (S20+/Exynos 990 comparison). Their `tools/sweet-root-tweaks.py` setup/activation sections match: `SetupDone`, `SetupFinishedAllSteps`, `SetupVersion=11`, `daemonizeNeedsToRun=false`; mini-Buddy flags off; managed cloud-configuration flag false; mobileactivationd data ark seeded. The `/chosen` security-status properties in `tools/mkadt.py` select the offline Hactivation path. The S8 ZIP is not an S21 setup implementation; its relevant recipe is the same as the S20+ ZIP.
