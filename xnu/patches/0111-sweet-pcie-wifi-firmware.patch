@@ -1,0 +1,372 @@
+diff --git a/bsd/dev/sweet_pcie.c b/bsd/dev/sweet_pcie.c
+--- a/bsd/dev/sweet_pcie.c
++++ b/bsd/dev/sweet_pcie.c
+@@ -26,6 +26,7 @@
+ #include <kern/clock.h>
+ #include <pexpert/pexpert.h>
+ #include <machine/machine_routines.h>
++#include <arm/pmap.h>
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+ 
+@@ -125,6 +126,9 @@
+ 	int link_up;
+ 	uint32_t ep_id;
+ 	uint64_t bar0_pa, bar0_size, bar2_pa, bar2_size;
++	uint32_t shared_addr, fw_flags;
++	uint64_t clm_pa;
++	uint32_t clm_len;
+ 	volatile uint32_t *mem;	/* virtual base of the PA_MEM window */
+ };
+ struct sweet_pcie_info sweet_pcie_info;
+@@ -425,6 +429,329 @@
+ 	return 0;
+ }
+ 
++/* BCM43xx AI backplane access through the endpoint's movable BAR0 window. */
++#define SWP_BAR0_WINDOW		0x080
++#define SWP_BAR0_REG_SIZE	0x1000
++#define SWP_ENUM_BASE		0x18000000
++#define SWP_CR4_CAP		0x004
++#define SWP_CR4_BANKIDX		0x040
++#define SWP_CR4_BANKINFO	0x044
++#define SWP_CR4_IOCTL		0x408
++#define SWP_CR4_RESET_CTL	0x800
++#define SWP_CR4_CPUHALT		0x0020
++#define SWP_BRCMF_RAMBASE	0x170000
++
++static uint64_t swp_fw_pa, swp_fw_len, swp_nv_pa, swp_nv_len, swp_clm_pa, swp_clm_len;
++
++static uint32_t swp_bp_read(uint32_t addr)
++{
++	uint32_t bar0 = (uint32_t)(P.bar_base[0] - PA_MEM);
++
++	ep_cfg_wr(SWP_BAR0_WINDOW, addr & ~(SWP_BAR0_REG_SIZE - 1));
++	return rd(P.mem, bar0 + (addr & (SWP_BAR0_REG_SIZE - 1)));
++}
++
++static void swp_bp_write(uint32_t addr, uint32_t value)
++{
++	uint32_t bar0 = (uint32_t)(P.bar_base[0] - PA_MEM);
++
++	ep_cfg_wr(SWP_BAR0_WINDOW, addr & ~(SWP_BAR0_REG_SIZE - 1));
++	wr(P.mem, bar0 + (addr & (SWP_BAR0_REG_SIZE - 1)), value);
++}
++
++static uint32_t swp_dmp_desc(uint32_t *erom, uint8_t *type)
++{
++	uint32_t val = swp_bp_read(*erom);
++
++	*erom += 4;
++	*type = (uint8_t)(val & 0xf);
++	if ((*type & ~8u) == 5u)
++		*type = 5;
++	return val;
++}
++
++static int swp_dmp_regaddr(uint32_t *erom, uint32_t *regbase, uint32_t *wrapbase)
++{
++	uint8_t desc, wraptype, stype, sztype;
++	uint32_t val, szdesc;
++
++	*regbase = *wrapbase = 0;
++	val = swp_dmp_desc(erom, &desc);
++	if (desc == 3)
++		wraptype = 3;
++	else if (desc == 5) {
++		*erom -= 4;
++		wraptype = 2;
++	} else {
++		*erom -= 4;
++		return -1;
++	}
++	do {
++		do {
++			val = swp_dmp_desc(erom, &desc);
++			if (desc == 0xf) {
++				*erom -= 4;
++				return -1;
++			}
++		} while (desc != 5 && desc != 1);
++		if (desc == 1) {
++			*erom -= 4;
++			return 0;
++		}
++		if (val & 8u)
++			swp_dmp_desc(erom, &desc);
++		sztype = (uint8_t)((val >> 4) & 3u);
++		if (sztype == 3) {
++			szdesc = swp_dmp_desc(erom, &desc);
++			if (szdesc & 8u)
++				swp_dmp_desc(erom, &desc);
++		}
++		if (sztype > 1)
++			continue;
++		stype = (uint8_t)((val >> 6) & 3u);
++		if (*regbase == 0 && stype == 0)
++			*regbase = val & 0xfffff000u;
++		if (*wrapbase == 0 && stype == wraptype)
++			*wrapbase = val & 0xfffff000u;
++	} while (*regbase == 0 || *wrapbase == 0);
++	return 0;
++}
++
++static int swp_find_cores(uint32_t *arm_base, uint32_t *arm_wrap, uint32_t *arm_rev,
++			  uint32_t *pcie_base, uint32_t *pcie_wrap,
++			  uint32_t *d11_base, uint32_t *d11_wrap, uint32_t *d11_count)
++{
++	uint32_t erom, val, id, regbase, wrapbase;
++	uint8_t type, rev;
++	int count = 0;
++
++	erom = swp_bp_read(SWP_ENUM_BASE + 0xfc);
++	if (erom < 0x18000000 || erom >= 0x20000000)
++		return -1;
++	do {
++		val = swp_dmp_desc(&erom, &type);
++		if (!(val & 1u) || type == 0 || type != 1)
++			continue;
++		id = (val >> 8) & 0xfffu;
++		val = swp_dmp_desc(&erom, &type);
++		if (type != 1)
++			return -1;
++		rev = (uint8_t)(val >> 24);
++		if (swp_dmp_regaddr(&erom, &regbase, &wrapbase))
++			continue;
++		if (id == 0x83e) {
++			*arm_base = regbase;
++			*arm_wrap = wrapbase;
++			*arm_rev = rev;
++		} else if (id == 0x83c) {
++			*pcie_base = regbase;
++			*pcie_wrap = wrapbase;
++		} else if (id == 0x812 && *d11_count < 2) {
++			d11_base[*d11_count] = regbase;
++			d11_wrap[*d11_count] = wrapbase;
++			(*d11_count)++;
++		}
++		if (++count > 128)
++			return -1;
++	} while (type != 0xf && erom < 0x20000000);
++	return *arm_base && *arm_wrap ? 0 : -1;
++}
++
++static uint32_t swp_cr4_ramsize(uint32_t base)
++{
++	uint32_t cap = swp_bp_read(base + SWP_CR4_CAP);
++	uint32_t banks = (cap & 0xfu) + ((cap >> 4) & 0xfu);
++	uint32_t size = 0, i, info, block;
++
++	if (!banks || banks > 32)
++		return 0;
++	for (i = 0; i < banks; i++) {
++		swp_bp_write(base + SWP_CR4_BANKIDX, i);
++		info = swp_bp_read(base + SWP_CR4_BANKINFO);
++		block = (info & 0x200u) ? 1024u : 8192u;
++		size += ((info & 0x7fu) + 1u) * block;
++	}
++	return size;
++}
++
++static void swp_cr4_reset(uint32_t wrap, uint32_t pre, uint32_t reset, uint32_t post)
++{
++	uint32_t ctl, i;
++
++	ctl = swp_bp_read(wrap + SWP_CR4_RESET_CTL);
++	if (!(ctl & 1u)) {
++		swp_bp_write(wrap + SWP_CR4_IOCTL, pre | 3u);
++		(void)swp_bp_read(wrap + SWP_CR4_IOCTL);
++		swp_bp_write(wrap + SWP_CR4_RESET_CTL, 1u);
++		swp_udelay(20);
++		for (i = 0; i < 300; i++) {
++			if (swp_bp_read(wrap + SWP_CR4_RESET_CTL) & 1u)
++				break;
++			swp_udelay(1);
++		}
++	}
++	swp_bp_write(wrap + SWP_CR4_IOCTL, reset | 3u);
++	(void)swp_bp_read(wrap + SWP_CR4_IOCTL);
++	for (i = 0; i < 50; i++) {
++		if (!(swp_bp_read(wrap + SWP_CR4_RESET_CTL) & 1u))
++			break;
++		swp_bp_write(wrap + SWP_CR4_RESET_CTL, 0);
++		swp_udelay(50);
++	}
++	swp_bp_write(wrap + SWP_CR4_IOCTL, post | 1u);
++	(void)swp_bp_read(wrap + SWP_CR4_IOCTL);
++}
++
++static void swp_tcm_copy(uint32_t addr, const uint8_t *src, uint32_t len)
++{
++	uint32_t bar2 = (uint32_t)(P.bar_base[2] - PA_MEM);
++	volatile uint32_t *dst32 = (volatile uint32_t *)((volatile uint8_t *)P.mem + bar2);
++	volatile uint8_t *dst8 = (volatile uint8_t *)P.mem + bar2;
++	uint32_t i = 0;
++
++	for (; i + 4 <= len; i += 4) {
++		uint32_t value = (uint32_t)src[i] | ((uint32_t)src[i + 1] << 8) |
++		    ((uint32_t)src[i + 2] << 16) | ((uint32_t)src[i + 3] << 24);
++		dst32[(addr + i) >> 2] = value;
++	}
++	for (; i < len; i++)
++		dst8[addr + i] = src[i];
++}
++
++static uint32_t swp_tcm_read32(uint32_t addr)
++{
++	volatile uint32_t *tcm = (volatile uint32_t *)((volatile uint8_t *)P.mem +
++	    (uint32_t)(P.bar_base[2] - PA_MEM));
++	return tcm[addr >> 2];
++}
++
++static void swp_tcm_write32(uint32_t addr, uint32_t value)
++{
++	volatile uint32_t *tcm = (volatile uint32_t *)((volatile uint8_t *)P.mem +
++	    (uint32_t)(P.bar_base[2] - PA_MEM));
++	tcm[addr >> 2] = value;
++}
++
++static void swp_fw_console(uint32_t shared)
++{
++	uint32_t base = swp_tcm_read32(shared + 20), buf, size, writeidx, i;
++	char line[128];
++	uint32_t n = 0;
++
++	line[0] = '\0';
++	if (!base || base > 0x400000)
++		return;
++	buf = swp_tcm_read32(base + 8);
++	size = swp_tcm_read32(base + 12);
++	writeidx = swp_tcm_read32(base + 16);
++	if (!buf || !size || size > 0x10000 || writeidx >= size ||
++	    (uint64_t)buf + size > P.bar_size[2])
++		return;
++	for (i = 0; i < writeidx; i++) {
++		volatile uint8_t *tcm = (volatile uint8_t *)P.mem +
++		    (uint32_t)(P.bar_base[2] - PA_MEM);
++		char c = tcm[buf + i];
++
++		if (c == '\r')
++			continue;
++		if (c == '\n' || n == sizeof(line) - 1) {
++			line[n] = '\0';
++			if (n)
++				SWP_LOG("FW: %s", line);
++			n = 0;
++			continue;
++		}
++		line[n++] = c;
++	}
++	if (n) {
++		line[n] = '\0';
++		SWP_LOG("FW: %s", line);
++	}
++}
++
++static int swp_firmware_start(void)
++{
++	uint32_t chipid, arm_base = 0, arm_wrap = 0, arm_rev = 0, pcie_base = 0, pcie_wrap = 0;
++	uint32_t d11_base[2] = {0, 0}, d11_wrap[2] = {0, 0}, d11_count = 0;
++	uint32_t ramsize, shared_slot, shared = 0, resetvec, flags, i;
++	const uint8_t *fw, *nv;
++
++	if (!swp_fw_pa || swp_fw_len < 4 || swp_fw_len > 0x400000 ||
++	    !swp_nv_pa || swp_nv_len < 4 || swp_nv_len > 0x10000 ||
++	    !swp_clm_pa || !swp_clm_len || swp_clm_len > 0x100000) {
++		SWP_LOG("Stage 3 needs sweetfw_*, sweetnv_* and sweetclm_* payload segments");
++		return -1;
++	}
++	chipid = swp_bp_read(SWP_ENUM_BASE);
++	if ((chipid & 0xffffu) != 0x4375u) {
++		SWP_LOG("unexpected chipcommon id 0x%x (want 0x4375)", chipid);
++		return -1;
++	}
++	if (swp_find_cores(&arm_base, &arm_wrap, &arm_rev, &pcie_base, &pcie_wrap,
++	    d11_base, d11_wrap, &d11_count)) {
++		SWP_LOG("DMP scan did not find ARM CR4 core");
++		return -1;
++	}
++	ramsize = swp_cr4_ramsize(arm_base);
++	if (!ramsize || (uint64_t)SWP_BRCMF_RAMBASE + ramsize > P.bar_size[2] ||
++	    swp_fw_len > ramsize || swp_nv_len > ramsize ||
++	    SWP_BRCMF_RAMBASE + swp_fw_len > SWP_BRCMF_RAMBASE + ramsize - swp_nv_len - 4) {
++		SWP_LOG("invalid TCM layout: base 0x%x size 0x%x BAR2 0x%llx fw 0x%llx nv 0x%llx",
++		    SWP_BRCMF_RAMBASE, ramsize, P.bar_size[2], swp_fw_len, swp_nv_len);
++		return -1;
++	}
++	SWP_LOG("BCM4375/%u ARM CR4 base 0x%x wrap 0x%x TCM size 0x%x PCIe core 0x%x/0x%x",
++	    (chipid >> 16) & 0xfu, arm_base, arm_wrap, ramsize, pcie_base, pcie_wrap);
++	fw = (const uint8_t *)phystokv((pmap_paddr_t)swp_fw_pa);
++	nv = (const uint8_t *)phystokv((pmap_paddr_t)swp_nv_pa);
++	resetvec = (uint32_t)fw[0] | ((uint32_t)fw[1] << 8) |
++	    ((uint32_t)fw[2] << 16) | ((uint32_t)fw[3] << 24);
++	swp_cr4_reset(arm_wrap, SWP_CR4_CPUHALT, SWP_CR4_CPUHALT, SWP_CR4_CPUHALT);
++	for (i = 0; i < d11_count; i++) {
++		/* Match brcmf_chip_cr4_set_passive(): PHY reset while retaining its clock. */
++		swp_cr4_reset(d11_wrap[i], 0x0c, 0x04, 0x04);
++	}
++	swp_tcm_copy(SWP_BRCMF_RAMBASE, fw, (uint32_t)swp_fw_len);
++	swp_tcm_copy(SWP_BRCMF_RAMBASE + ramsize - (uint32_t)swp_nv_len, nv, (uint32_t)swp_nv_len);
++	shared_slot = SWP_BRCMF_RAMBASE + ramsize - 4;
++	swp_tcm_write32(shared_slot, 0);
++	swp_tcm_write32(0, resetvec);
++	SWP_LOG("firmware copied (%u bytes), NVRAM copied (%u bytes), reset vector 0x%x",
++	    (uint32_t)swp_fw_len, (uint32_t)swp_nv_len, resetvec);
++	__asm__ volatile("dsb sy" ::: "memory");
++	swp_cr4_reset(arm_wrap, SWP_CR4_CPUHALT, 0, 0);
++	for (i = 0; i < 100; i++) {
++		swp_mdelay(50);
++		shared = swp_tcm_read32(shared_slot);
++		if (shared)
++			break;
++	}
++	if (shared < SWP_BRCMF_RAMBASE || shared > SWP_BRCMF_RAMBASE + ramsize - 88) {
++		SWP_LOG("firmware did not publish a valid shared pointer (0x%x)", shared);
++		return -1;
++	}
++	flags = swp_tcm_read32(shared);
++	if ((flags & 0xffu) < 5 || (flags & 0xffu) > 7) {
++		SWP_LOG("unsupported firmware shared protocol 0x%x", flags & 0xffu);
++		return -1;
++	}
++	sweet_pcie_info.shared_addr = shared;
++	sweet_pcie_info.fw_flags = flags;
++	sweet_pcie_info.clm_pa = swp_clm_pa;
++	sweet_pcie_info.clm_len = (uint32_t)swp_clm_len;
++	SWP_LOG("firmware shared area 0x%x flags 0x%08x protocol %u; CLM staged at 0x%llx (%u bytes)",
++	    shared, flags, flags & 0xffu, swp_clm_pa, (uint32_t)swp_clm_len);
++	swp_tcm_write32(shared + 84, 0x00801407);
++	if (swp_tcm_read32(shared + 84) != 0x00801407) {
++		SWP_LOG("host_cap readback mismatch 0x%x", swp_tcm_read32(shared + 84));
++		return -1;
++	}
++	SWP_LOG("host_cap 0x00801407 confirmed");
++	swp_mdelay(200);
++	swp_fw_console(shared);
++	return 0;
++}
++
+ static int swp_bringup(int level)
+ {
+ 	uint32_t v;
+@@ -566,8 +893,16 @@
+ 		return;
+ 	PE_parse_boot_argn("swpcie_gpf0", &gpf0_off, sizeof(gpf0_off));
+ 	PE_parse_boot_argn("swpcie_gpp12", &gpp12_off, sizeof(gpp12_off));
+-
+-	SWP_LOG("stage 1 v1 level %u gpf0 off 0x%x", level, gpf0_off);
++	PE_parse_boot_argn("sweetfw_pa", &swp_fw_pa, sizeof(swp_fw_pa));
++	PE_parse_boot_argn("sweetfw_len", &swp_fw_len, sizeof(swp_fw_len));
++	PE_parse_boot_argn("sweetnv_pa", &swp_nv_pa, sizeof(swp_nv_pa));
++	PE_parse_boot_argn("sweetnv_len", &swp_nv_len, sizeof(swp_nv_len));
++	PE_parse_boot_argn("sweetclm_pa", &swp_clm_pa, sizeof(swp_clm_pa));
++	PE_parse_boot_argn("sweetclm_len", &swp_clm_len, sizeof(swp_clm_len));
++
++	SWP_LOG("stage %u v1 level %u gpf0 off 0x%x", level >= 3 ? 3 : level >= 2 ? 2 : 1, level, gpf0_off);
+ 	r = swp_bringup((int)level);
+-	SWP_LOG("stage %u %s", level >= 2 ? 2 : 1, r ? "FAILED" : "done");
+-}
++	if (r == 0 && level >= 3)
++		r = swp_firmware_start();
++	SWP_LOG("stage %u %s", level >= 3 ? 3 : level >= 2 ? 2 : 1, r ? "FAILED" : "done");
++}

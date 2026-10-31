@@ -2,6 +2,7 @@
 """Pack an xnu kernel Mach-O + ADT into the payload the sweet shim boots.
 
   mkpayload.py KERNEL ADT OUT [--cmdline "..."] [--ramdisk IMAGE]
+      [--wifi-firmware BIN --wifi-nvram TXT --wifi-clm BLOB]
 
 The kernel is linked as a PIE with LC_DYLD_CHAINED_FIXUPS. Nobody else
 (no kmutil, no iBoot) resolves those for us, and xnu only rebases static
@@ -25,6 +26,11 @@ kernel_end past it, so the shim needs no changes: the image lands below the
 ADT and boot_args, inside topOfKernelData (never handed to the VM), and the
 ADT gets /chosen/memory-map "RAMDisk" = <phys, size> for IOFindBSDRoot to
 turn into md0 (boot with rd=md0).
+
+The optional Wi-Fi blobs are appended as reserved kernel segments and their
+physical addresses are added to the command line for sweet_pcie Stage 3.
+The text NVRAM is converted to brcmfmac's NUL-separated format and length
+token before it is packed. The blobs stay external to the repository.
 """
 import argparse, os, struct, sys
 
@@ -140,7 +146,29 @@ def adt_dram(adt_blob):
             struct.unpack('<Q', chosen.prop('dram-size'))[0])
 
 
-def build(kernel_path, adt_path, cmdline, ramdisk_path=None):
+def brcmf_nvram(raw):
+    """Convert Samsung's text NVRAM into brcmfmac's NUL list + length token."""
+    entries = []
+    for line in raw.decode('ascii').splitlines():
+        line = line.partition('#')[0].strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        if key.startswith('pcie/') or key == 'devpath':
+            raise ValueError('multi-device NVRAM needs brcmfmac domain/bus filtering')
+        entries.append((key + '=' + value).encode('ascii'))
+    if not entries:
+        raise ValueError('NVRAM file has no key/value entries')
+    if not any(x.startswith(b'boardrev=') for x in entries):
+        entries.append(b'boardrev=0xff')
+    body = b'\0'.join(entries) + b'\0'
+    body += b'\0' * ((-(len(body) + 1)) & 3)
+    words = len(body) // 4
+    return body + struct.pack('<I', (((~words) & 0xffff) << 16) | words)
+
+
+def build(kernel_path, adt_path, cmdline, ramdisk_path=None, wifi_fw_path=None,
+          wifi_nvram_path=None, wifi_clm_path=None):
     buf = bytearray(open(kernel_path, 'rb').read())
     m = parse_macho(buf)
     nfix = apply_chained_fixups(buf, m)
@@ -168,6 +196,28 @@ def build(kernel_path, adt_path, cmdline, ramdisk_path=None):
         adt_blob = add_ramdisk_to_adt(adt_blob, rd_pa, rd_size)
         ramdisk = (hex(rd_pa), hex(rd_size))
 
+    wifi = None
+    if any((wifi_fw_path, wifi_nvram_path, wifi_clm_path)):
+        if not all((wifi_fw_path, wifi_nvram_path, wifi_clm_path)):
+            raise ValueError('Wi-Fi firmware, NVRAM and CLM paths must be supplied together')
+        wifi = {}
+        for key, path in (('fw', wifi_fw_path), ('nvram', wifi_nvram_path),
+                          ('clm', wifi_clm_path)):
+            data = open(path, 'rb').read()
+            if key == 'nvram':
+                data = brcmf_nvram(data)
+            va = (kernel_end + PAGE - 1) & ~(PAGE - 1)
+            size = (len(data) + PAGE - 1) & ~(PAGE - 1)
+            pa = va - virt_base + PHYS_BASE
+            pieces.append((va, size, data))
+            wifi[key] = (pa, len(data))
+            kernel_end = va + size
+        extra = ' '.join(f'sweet{key}_pa=0x{pa:x} sweet{key}_len=0x{size:x}'
+                         for key, (pa, size) in wifi.items())
+        cmdline = (cmdline + ' ' + extra).strip()
+        if len(cmdline.encode()) >= BOOT_LINE_LENGTH:
+            raise ValueError('Wi-Fi payload boot arguments exceed the 607-byte command-line limit')
+
     hdr_size = SEG_TABLE + 32 * len(pieces)
     out = bytearray(hdr_size)
     seg_table = []
@@ -188,7 +238,7 @@ def build(kernel_path, adt_path, cmdline, ramdisk_path=None):
     for i, t in enumerate(seg_table):
         struct.pack_into('<4Q', out, SEG_TABLE + 32 * i, *t)
     info = dict(cputype=hex(m['cputype']), cpusub=m['cpusub'], fixups=nfix, virt_base=hex(virt_base),
-                entry=hex(m['entry']), kernel_end=hex(kernel_end), ramdisk=ramdisk, size=len(out),
+                entry=hex(m['entry']), kernel_end=hex(kernel_end), ramdisk=ramdisk, wifi=wifi, size=len(out),
                 segs=[(s['name'], hex(s['vmaddr']), hex(s['vmsize'])) for s in segs])
     return bytes(out), info
 
@@ -198,11 +248,18 @@ if __name__ == '__main__':
     ap.add_argument('kernel'); ap.add_argument('adt'); ap.add_argument('out')
     ap.add_argument('--cmdline', default='debug=0xc serial=3 cpus=1 keepsyms=1')
     ap.add_argument('--ramdisk', help='root image for md0 (boot with rd=md0)')
+    ap.add_argument('--wifi-firmware', help='BCM4375 bcmdhd_sta.bin_b1')
+    ap.add_argument('--wifi-nvram', help='BCM4375 nvram.txt_1rh_es43_b1 or nvram.txt_CS01_semco_b1')
+    ap.add_argument('--wifi-clm', help='BCM4375 bcmdhd_clm.blob')
     a = ap.parse_args()
-    blob, info = build(a.kernel, a.adt, a.cmdline, a.ramdisk)
+    blob, info = build(a.kernel, a.adt, a.cmdline, a.ramdisk,
+                       a.wifi_firmware, a.wifi_nvram, a.wifi_clm)
     open(a.out, 'wb').write(blob)
     for k, v in info.items():
         if k != 'segs':
             print(f'{k}: {v}')
     for s in info['segs']:
         print('  ', *s)
+    if info['wifi']:
+        for name, (pa, size) in info['wifi'].items():
+            print(f'  wifi_{name}: pa={pa:#x} size={size:#x}')
