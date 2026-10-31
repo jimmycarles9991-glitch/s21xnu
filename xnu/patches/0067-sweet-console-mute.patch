@@ -1,28 +1,17 @@
 --- a/osfmk/console/serial_console.c
 +++ b/osfmk/console/serial_console.c
-@@ -268,6 +268,12 @@
-  */
- #if defined(ARM64_BOARD_CONFIG_SWEET)
- extern void sweet_log_append(const char *c, int size);  /* bsd/dev/sweet_ufs.c */
-+/*
-+ * Set by AppleCLCD (boot-arg sweetfb_noconsole=1) once the GUI presents:
-+ * console text still goes to the persistent log, but is not drawn over
-+ * the GUI. A panic draws again.
-+ */
+@@ -276,1 +276,5 @@
++/* Set after first swap to keep kernel text off the GUI. */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
 +int sweet_console_muted;
- #endif
- 
++#endif
  static inline void
-@@ -277,6 +283,9 @@
- 
- #if defined(ARM64_BOARD_CONFIG_SWEET)
- 	sweet_log_append(c, size);
-+	if (sweet_console_muted && !panic_active()) {
-+		return;
-+	}
- #endif
- 
- 	if (disableConsoleOutput) {
+@@ -281,1 +285,4 @@
+-	extern int disableConsoleOutput;
++	extern int disableConsoleOutput;
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	if (sweet_console_muted && !panic_active()) return;
++#endif
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
 @@ -26,11 +26,13 @@
@@ -41,16 +30,14 @@
  #if defined(SWEET)
  #include <IOKit/IOService.h>
  #include <IOKit/IOUserClient.h>
-@@ -290,9 +292,9 @@
+@@ -290,8 +292,7 @@
  		int quiet = 0;
  		fConsolePaused = true;
  		if (PE_parse_boot_argn("sweetfb_noconsole", &quiet, sizeof(quiet)) && quiet != 0) {
 -			PE_Video video;
 -			PE_current_console(&video);
 -			PE_initialize_console(&video, kPEDisableScreen);
-+			/* Not PE_initialize_console(kPEDisableScreen): its console switch
-+			 * writes the read-only-late cons_ops_index and panics. */
++			/* Avoid PE_initialize_console: it writes read-only cons_ops_index. */
 +			sweet_console_muted = 1;
  		}
  	}
- 
