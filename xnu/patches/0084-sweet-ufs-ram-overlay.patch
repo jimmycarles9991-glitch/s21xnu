@@ -10,7 +10,8 @@ index 5083002..396f5e2 100644
 +#define SU_OV_CHUNK     (1u << 20)
 +#define SU_OV_PAGES     (SU_OV_CHUNK / UFS_BLOCK)
 +#define SU_OV_MAXCHUNKS 512u
-+#define SU_OV_MAXBLOCKS (1u << 21)
++/* Allow a 64 GiB logical image; the directory remains 64 MiB at this limit. */
++#define SU_OV_MAXBLOCKS (1u << 24)
 +static bool su_ov_on;
 +static bool su_ov_full_said;
 +static uint32_t *su_ov_dir;
