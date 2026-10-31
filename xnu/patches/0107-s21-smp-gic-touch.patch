@@ -1,0 +1,78 @@
+diff -ruN a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+--- a/bsd/dev/sweet_touch.c	2026-10-31 15:39:51.479494179 +0000
++++ b/bsd/dev/sweet_touch.c	2026-10-31 15:39:51.480959114 +0000
+@@ -409,7 +409,7 @@
+ void
+ sweet_touch_init(void)
+ {
+-	int touch_ts = 0, touch_pwr = 0, touch_flip = 0, touch_trace = 0, touch_pull = 0;
++	int touch_ts = 0, touch_pwr = 2, touch_flip = 0, touch_trace = 0, touch_pull = 0;
+ 	uint32_t touch_poll_us = 8000;
+ 
+ 	if (!PE_parse_boot_argn("touch_ts", &touch_ts, sizeof(touch_ts))) {
+@@ -515,8 +515,25 @@
+ 	sleep_us(50000); /* controller boot time, generous first guess */
+ 
+ 	uint8_t cmd, id[5] = {0};
+-	cmd = SEC_TS_READ_DEVICE_ID;
+-	if (i2c_write_read(&ts_i2c, SEC_TS_ADDR, &cmd, 1, id, 5)) {
++	/* S21: Linux's slsi_ts shutdown leaves the IC asleep after kexec. Power-cycle
++	 * (default touch_pwr=2) and retry the ID read, cycling the rails again if it NAKs. */
++	int tries, got = -1;
++	for (tries = 0; tries < 4 && got; tries++) {
++		cmd = SEC_TS_READ_DEVICE_ID;
++		got = i2c_write_read(&ts_i2c, SEC_TS_ADDR, &cmd, 1, id, 5);
++		if (got) {
++			note("device ID read failed (try %d), power-cycling", tries);
++			uint8_t w[2] = { S2DOS05_EN, 0 }, en;
++			if (!i2c_write_read(&pmic_i2c, S2DOS05_ADDR, w, 1, &en, 1)) {
++				w[1] = (uint8_t)(en & ~((1U << 1) | (1U << 2)));
++				i2c_write(&pmic_i2c, S2DOS05_ADDR, w, 2);
++				sleep_us(100000);
++			}
++			s2dos05_power(1);
++			sleep_us(150000);
++		}
++	}
++	if (got) {
+ 		note("device ID read failed (nak) -- bus or power problem");
+ 		if (touch_ts == 2) {
+ 			panic("sweet_touch: %s", summary);
+diff -ruN a/iokit/Kernel/arm/SweetCPU.cpp b/iokit/Kernel/arm/SweetCPU.cpp
+--- a/iokit/Kernel/arm/SweetCPU.cpp	2026-10-31 15:39:51.472548650 +0000
++++ b/iokit/Kernel/arm/SweetCPU.cpp	2026-10-31 15:39:51.473948151 +0000
+@@ -242,7 +242,7 @@
+ 	IOLog("SWEET CPU: cpu=%u CPU_ON target=0x%x entry_pa=0x%llx context=%u\n",
+ 	    getCPUNumber(), cpu->phys_id, (uint64_t)entry, getCPUNumber());
+ 	__builtin_arm_dsb(DSB_SY);
+-	int32_t rc = sweet_psci_cpu_on(cpu->phys_id, entry, getCPUNumber());
++	int32_t rc = sweet_psci_cpu_on(cpu->phys_id, entry, 0 /* context 0 like Linux; non-zero never proven on H-Arx */);
+ 	IOLog("SWEET CPU: cpu=%u PSCI CPU_ON rc=%d\n", getCPUNumber(), rc);
+ 	/* cpu_start() discards PE_cpu_start's return; do not silently carry on. */
+ 	if (rc != 0) {
+diff -ruN a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
+--- a/pexpert/arm/pe_fiq.c	2026-10-31 15:39:51.466177675 +0000
++++ b/pexpert/arm/pe_fiq.c	2026-10-31 15:39:51.467510384 +0000
+@@ -56,9 +56,13 @@
+ 	// We only care about aff1 and aff0
+ 	uint32_t phys_id = __builtin_arm_rsr64("MPIDR_EL1") & (MPIDR_AFF1_MASK | MPIDR_AFF0_MASK);
+ 
+-	for (vm_offset_t offset = 0; offset < gicr_size; offset += GICR_PE_SIZE) {
++	vm_offset_t offset = 0;
++	while (offset < gicr_size) {
+ 		vm_offset_t gicr_pe_base = gicr_base + offset;
+ 		uint64_t gicr_typer = gicr_read64(GICR_TYPER);
++		/* S21: GICv4 redistributors have 4 frames (0x40000 each); v3 has 2 (0x20000).
++		 * GICR_TYPER.VLPIS (bit 1) tells which. */
++		vm_offset_t pe_stride = (gicr_typer & 0x2) ? 0x40000 : GICR_PE_SIZE;
+ 		uint32_t aff_value = (uint32_t) (gicr_typer >> GICR_TYPER_AFFINITY_VALUE_SHIFT) & (MPIDR_AFF1_MASK | MPIDR_AFF0_MASK);
+ 
+ 		if (phys_id == aff_value) {
+@@ -68,6 +72,7 @@
+ 		if (gicr_typer & GICR_TYPER_LAST) {
+ 			break;
+ 		}
++		offset += pe_stride;
+ 	}
+ 
+ 	panic("%s: cannot find GICR base for core %u", __func__, ml_get_cpu_number(phys_id));

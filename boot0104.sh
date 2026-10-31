@@ -13,6 +13,6 @@ ssh -F /dev/null root@192.168.1.66 'sync; filefrag -v /mnt/android-data/linux/io
 python3 tools/mkufsmap.py /tmp/ff3.txt ufsmap3.bin
 python3 -c 'import os; n=os.path.getsize("ufsmap3.bin")//12; print("UFS map entries", n); assert n <= 8192, "map exceeds kernel capacity"'
 UFSMAP=ufsmap3.bin python3 tools/mkadt.py adt.bin --highmem
-python3 tools/mkpayload.py $K adt.bin payload-s21usb.bin --cmdline "-v debug=0xc serial=3 cpus=1 keepsyms=1 sweetfb_noconsole=1 sweetfb_hz=30 sweetusb=0 sweetkeys=0 sweettouch=0 touch_ts=1 sweetbattery=0 rd=ufsroot0 ufsroot=userdata ufshs=1 ufsov=1 s21usb=3 ufsovmb=1024 rootrw=1 unentitled_ios_sim_launch=1 sweethidf=${F:-0}"
+python3 tools/mkpayload.py $K adt.bin payload-s21usb.bin --cmdline "-v debug=0xc serial=3 cpus=${CPUS:-8} keepsyms=1 sweetfb_noconsole=1 sweetfb_hz=30 sweetusb=0 sweetkeys=0 sweettouch=0 touch_ts=1 sweetbattery=0 rd=ufsroot0 ufsroot=userdata ufshs=1 ufsov=1 s21usb=3 ufsovmb=1024 rootrw=1 unentitled_ios_sim_launch=1 sweethidf=${F:-0}"
 scp -F /dev/null s21-shim.Image payload-s21usb.bin root@192.168.1.66:/root/
 ssh -F /dev/null -t root@192.168.1.66 'sync; cd /root; kexec -u </dev/null 2>/dev/null; kexec -l s21-shim.Image --initrd=payload-s21usb.bin </dev/null; echo jumping; sleep 2; kexec -e </dev/null'
