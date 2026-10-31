@@ -6,6 +6,11 @@
 - Validation: `git apply --numstat` parses the patch (529-line new driver, one build-file line, four init lines). Could not run `git apply --check` or compile because the xnu-8796 source checkout is not present in this workspace. Attempted clone failed because sandbox DNS cannot resolve GitHub. The user requested a local commit only; do not push without a later request.
 - Next: validate against the XNU patch chain and build with CI, then boot with `sweetpcie=1` only after reviewing the applied patch and MMIO mappings. No device boot performed.
 
+## S21+ Wi-Fi Stage 2 S2MPU window patch (2026-10-31)
+- Added `xnu/patches/0110-sweet-pcie-s2mpu-window.patch`. `sweetpcie=1` retains the confirmed Stage 1 behavior. `sweetpcie=2` opens the Exynos `PCIE_GEN2` DMA pool before assigning BARs/enabling endpoint bus mastering: HVC FID `0xC6000100`, subsystem index 7, RW attr 3, `0x92400000..0x933fffff`, in 512 Linux-compatible 32 KiB calls. It stops and logs the first HVC error.
+- XNU's managed low RAM (`0xb0000000` through below `0xfd000000`) and optional high bank (`0x8c0000000+`) do not overlap this pool.
+- Patch parser validation (`git apply --numstat`) reports a 47-add/3-remove hunk. No source checkout was available for apply-check/build; no device boot or HVC was run. Next: build, confirm 0110 applied, boot with `sweetpcie=2`, and report the `S2MPU PCIE_GEN2` result before firmware/DMA work.
+
 ## 8-core SMP and touch bring-up (2026-10-31)
 **Result (observed by the user):** all 8 cores initialize (4x A55 MPIDR 0x000-0x300, 3x A78 0x400-0x600, 1x X1 0x700) with `cpus=8`; touch works, and swipe-up unlocks to the home screen. UI is much faster than with 1 core. Boot takes noticeably longer than with `cpus=4` (cause not investigated; bring-up starts cores one at a time with per-core waits, which is a guess). Staged boots `CPUS=2`, `CPUS=4`, `CPUS=8` all reached the lock screen/home screen. No long-run stability test has been done yet.
 

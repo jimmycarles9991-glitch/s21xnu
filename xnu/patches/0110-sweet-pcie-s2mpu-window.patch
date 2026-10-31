@@ -1,0 +1,78 @@
+diff --git a/bsd/dev/sweet_pcie.c b/bsd/dev/sweet_pcie.c
+--- a/bsd/dev/sweet_pcie.c
++++ b/bsd/dev/sweet_pcie.c
+@@ -8,7 +8,7 @@
+  *
+  * Boot-arg `sweetpcie=N` (default 0 = do nothing, no MMIO touched):
+  *   1  PHY/PCIe bring-up, wait for L0, read vendor/device id of bus1:0.0
+- *   2  1 + assign endpoint BARs, enable MEM+BME, read BAR0 (chipcommon id)
++ *   2  1 + assign endpoint BARs, enable MEM+BME, open the S2MPU DMA pool
+  * Optional: swpcie_gpf0=<bank offset in pinctrl@11040000> (default 0)
+  *           swpcie_gpp12=<bank offset in pinctrl@10730000> (read-only report of WL_REG_ON)
+  *
+@@ -385,6 +385,46 @@
+ }
+ 
+ /* ---- main ------------------------------------------------------------------- */
++/* Exynos HVC interface from the Linux port: HVC_FID_BASE + 0x100. */
++#define SWP_HVC_SET_S2MPU	0xC6000100ULL
++#define SWP_S2MPU_PCIE_GEN2	7
++#define SWP_S2MPU_ATTR_RW	3
++#define SWP_DMA_BASE		0x92400000ULL
++#define SWP_DMA_SIZE		0x01000000ULL
++#define SWP_DMA_GRANULE		0x00008000ULL
++
++static uint64_t swp_set_s2mpu(uint64_t base)
++{
++	register uint64_t x0 __asm__("x0") = SWP_HVC_SET_S2MPU;
++	register uint64_t x1 __asm__("x1") = SWP_S2MPU_PCIE_GEN2;
++	register uint64_t x2 __asm__("x2") = base;
++	register uint64_t x3 __asm__("x3") = SWP_DMA_GRANULE;
++	register uint64_t x4 __asm__("x4") = SWP_S2MPU_ATTR_RW;
++
++	__asm__ volatile("hvc #0" : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3), "+r"(x4) : :
++	    "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13",
++	    "x14", "x15", "x16", "x17", "cc", "memory");
++	return x0;
++}
++
++static int swp_open_dma_window(void)
++{
++	uint64_t off, ret;
++
++	for (off = 0; off < SWP_DMA_SIZE; off += SWP_DMA_GRANULE) {
++		ret = swp_set_s2mpu(SWP_DMA_BASE + off);
++		if (ret) {
++			SWP_LOG("S2MPU PCIE_GEN2 failed at 0x%llx (HVC result 0x%llx)",
++			    SWP_DMA_BASE + off, ret);
++			return -1;
++		}
++	}
++	SWP_LOG("S2MPU PCIE_GEN2 RW window 0x%llx..0x%llx open (%llu x 32 KiB)",
++	    SWP_DMA_BASE, SWP_DMA_BASE + SWP_DMA_SIZE - 1,
++	    SWP_DMA_SIZE / SWP_DMA_GRANULE);
++	return 0;
++}
++
+ static int swp_bringup(int level)
+ {
+ 	uint32_t v;
+@@ -493,6 +533,10 @@
+ 	if (level < 2)
+ 		return 0;
+ 
++	/* Permit the Wi-Fi function's DMA before setting its bus-master bit. */
++	if (swp_open_dma_window())
++		return -1;
++
+ 	if (assign_bars())
+ 		return -1;
+ 	P.mem = swp_map(PA_MEM, SZ_MEM);
+@@ -525,5 +569,5 @@
+ 
+ 	SWP_LOG("stage 1 v1 level %u gpf0 off 0x%x", level, gpf0_off);
+ 	r = swp_bringup((int)level);
+-	SWP_LOG("stage 1 %s", r ? "FAILED" : "done");
+-}
++	SWP_LOG("stage %u %s", level >= 2 ? 2 : 1, r ? "FAILED" : "done");
++}
