@@ -1,8 +1,8 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
 ## UFS root journal write failure (2026-10-31)
-- User photo shows HFS journal-header writes failing with strategy error `0x1e` (`EROFS`), followed by root mount retries. Boot args request `ufsov=1` and `rootrw=1`; kernel strings confirm the RAM overlay code is present. Inference: `su_ov_setup()` declined to enable the overlay because `SU_OV_MAXBLOCKS` was 2^21 (8 GiB), below the 16 GiB logical root image extent map; with overlay off, the read-only strategy returns EROFS.
-- Raised the overlay logical-block limit to 2^24 (64 GiB; at most a 64 MiB directory) in patch 0084. This should allow the current image map while keeping all writes in volatile RAM. Commit `7b96916` was pushed to `jimmycarles9991-glitch/s21xnu:s21-stage2` and verified with `git ls-remote`. CI has not run: the workflow only auto-builds on pushes to `main` or manual dispatch. Kernel rebuild and boot verification remain pending.
+- User photo shows HFS journal-header writes failing with strategy error `0x1e` (`EROFS`), followed by root mount retries. The extracted kernel has no `ufsov` strings, so it does not contain the overlay code.
+- Root cause confirmed in Actions run `41199990933` logs: patch 0084 was skipped as “corrupt patch at line 26.” The prior edit added a line to a unified diff without adjusting its hunk count. Corrected its header from `+96,19` to `+96,20`; `git apply --numstat` parses it. The same patch raises the overlay logical-block limit to 2^24 (64 GiB; at most a 64 MiB directory), sufficient for the 16 GiB mapped root image. Rebuild and verification pending; require `ufsov` overlay strings in the built kernel before use.
 
 ## Kernel artifact extracted (2026-10-31)
 - User reported `kernel-xnu.zip` was ready and asked to extract it into `xnu/out` with overwrite. Extracted using overwrite mode. Archive SHA-256: `3aed895ab30f1322d9985cc9e26470f855d493d2993a9b6d951480a88167516f`.
