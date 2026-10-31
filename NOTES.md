@@ -1,5 +1,25 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## 8-core SMP and touch bring-up (2026-10-31)
+**Result (observed by the user):** all 8 cores initialize (4x A55 MPIDR 0x000-0x300, 3x A78 0x400-0x600, 1x X1 0x700) with `cpus=8`; touch works, and swipe-up unlocks to the home screen. UI is much faster than with 1 core. Boot takes noticeably longer than with `cpus=4` (cause not investigated; bring-up starts cores one at a time with per-core waits, which is a guess). Staged boots `CPUS=2`, `CPUS=4`, `CPUS=8` all reached the lock screen/home screen. No long-run stability test has been done yet.
+
+**Fixes (patches `0107`, `0108`, plus `tools/mkadt.py` and `boot0104.sh`):**
+- `0107` `pexpert/arm/pe_fiq.c`: the GIC redistributor walk used a fixed `GICR_PE_SIZE` of 0x20000. The S21 DTS gives a 2 MiB window for 8 CPUs, i.e. 0x40000 each (GICv4 frame layout). The walk now steps 0x40000 when `GICR_TYPER.VLPIS` (bit 1) is set, else 0x20000. `tools/mkadt.py` `GICR_SIZE` raised from `0x100000` to `0x200000` (1 MiB only covered 4 CPUs). Not tested in isolation; after this change the failure moved from the redistributor lookup to the `CPU_ON` timeout below.
+- `0107` `iokit/Kernel/arm/SweetCPU.cpp`: PSCI `CPU_ON` context id is now 0 (Linux passes 0; earlier probes only worked with 0; the entry stub ignores x0).
+- `0108` `SweetCPU.cpp`: with `cpus>1` the kernel panicked `SWEET CPU: cpu=1 startup timeout (reset/MMU/GIC/SGI)` at `SweetCPU.cpp:164`, although `CPU_ON` had been accepted. Cause: the kernel lives at ~0x8c0000000 (above 4 GiB) while every `CPU_ON` that ever worked (Linux, probe payloads) used an entry below 4 GiB. `startCPU` now maps physical `0x80300000` (dead shim image from the kexec) with `ml_io_map`, writes a 16-byte trampoline (`ldr x16,#8; br x16; .quad entry`) there, and passes that address to `CPU_ON`. It worked from the first boot with it (`CPUS=2`). Assumption, not verified: `0x80300000` is unused after the shim hands over. `ml_io_map` must be declared `extern "C"` at file scope (the first 0108 failed to link without it).
+- `0094` touch driver (`bsd/dev/sweet_touch.c`, bit-banged I2C on gpp4-0/1, ATTN gpa1-0, polled): `touch_pwr` now defaults to 2 (power-cycle the S2DOS05 LDO2/LDO3 touch supplies) and the device-ID read retries up to 4 times, power-cycling again on each NAK. Touch started working with this build. Likely cause (inferred, not proven): Linux's `slsi_ts` shutdown leaves the controller asleep after kexec. Which part of the change fixed it (power-cycle vs retry) is unknown.
+- `boot0104.sh` now uses `cpus=${CPUS:-8}`; run `CPUS=4 ./boot0104.sh` to step down if a core misbehaves.
+
+**Build facts:** CI run with 0107+0108 first failed to link (missing `extern "C"`); the corrected 0108 built. Patches still skipped by CI on the S21 (Qualcomm-era, do not apply on the Exynos `sweet_ufs.c`): 0030, 0031, 0034, 0041, 0047, 0054, 0060, 0062, 0063, 0069, 0072-0077, 0081, 0082, 0089. Check `Skipping patch` lines after every push. Live repo/remote: `github.com/jimmycarles9991-glitch/s21xnu`, branch `main` (remote name `s21`; the older `tiktop101/s21xnu` remote in older notes is stale).
+
+**Open / next:**
+- The scheduler treats all 8 cores as identical; nothing steers work to the A78/X1 cores (no AMP/cluster topology in the ADT). Per-core `cluster-id` is 0 for all.
+- `CNTFRQ_EL0` is 0 or junk on the secondary cores (firmware never programs it); XNU takes 26 MHz from the ADT so it has not mattered so far.
+- No soak test yet: watch for random panics on the big cores and report the first panic line (`cpu=N`).
+- Move `0105-sweet-hid-edge-toggle-log.patch` from the repo root into `xnu/patches/` if it should be in the build.
+- CPU hotplug/suspend (`CPU_OFF`, resume) is still unimplemented and panics by design.
+
+
 ## Console-mute panic: root cause + fix (2026-10-31)
 - IMG_0463 = same panic as IMG_0462 (PC 0xfffffe000745b690 `_switch_to_serial_console+0x1c`, FAR `_cons_ops_index`, LR `_PE_initialize_console+0x58`): booted kernel still has the old `PE_initialize_console(kPEDisableScreen)` path, i.e. **0067 was not applied**. Writing `cons_ops_index` (SECURITY_READ_ONLY_LATE on arm) faults. Boot WITHOUT `sweetfb_noconsole=1` as a stopgap.
 - Why 0067 kept being skipped: (1) old hunk headers did not match their bodies (malformed), (2) it anchored on `sweet_log_append` from patch 0047, but on S21 0047 never applies (the S21 `bsd/dev/sweet_ufs.c` from 0028 is Exynos-specific, so Qualcomm-era 0030/0034/0047/0054/0060/0069/0077/0082 fail `git apply --check` and are silently skipped by dxb).

@@ -4,7 +4,9 @@ Experimental work to bring Apple's open-source **XNU kernel (`xnu-8796`, iOS 16 
 
 The project started as an XNU port for the Xiaomi Redmi Note 10 Pro (`sweet`, Qualcomm SM7150). The S21+ work reuses that kernel and shim code but retargets hardware-specific pieces. Some inherited patches still contain Qualcomm-specific addresses and must not be assumed safe on Exynos.
 
-> **Current status (handoff dated 2026-10-24, updated after the first HS-G4 boot):** XNU has reached first light, a custom userspace init as PID 1, and a small HFS+ ramdisk root. The Exynos UFS controller now works for **read-only** access: link startup, GPT lookup, real partition reads, and a 4 GiB HFS+ root image stored as a file inside `userdata` (read through a boot-time extent map) mounts and runs the custom init as PID 1. An optional HS-G4 power-mode change (boot-arg `ufshs`) has been accepted by the controller and device. Still open: measured speed, proof that the file's extents stay put, a trimmed iOS root, a writable path for `/private/var`, and running Apple's real `launchd`. **This is not yet a bootable iOS phone.**
+> **Update 2026-10-31:** the iOS 16 lock screen/home screen is reached on the S21+, all 8 CPU cores run (`cpus=8`) and touch works (see `NOTES.md`, "8-core SMP and touch bring-up"). The older status paragraph below is kept as recorded.
+>
+> **Status (handoff dated 2026-10-24, updated after the first HS-G4 boot):** XNU has reached first light, a custom userspace init as PID 1, and a small HFS+ ramdisk root. The Exynos UFS controller now works for **read-only** access: link startup, GPT lookup, real partition reads, and a 4 GiB HFS+ root image stored as a file inside `userdata` (read through a boot-time extent map) mounts and runs the custom init as PID 1. An optional HS-G4 power-mode change (boot-arg `ufshs`) has been accepted by the controller and device. Still open: measured speed, proof that the file's extents stay put, a trimmed iOS root, a writable path for `/private/var`, and running Apple's real `launchd`. **This is not yet a bootable iOS phone.**
 
 ## Status at a glance
 
@@ -16,7 +18,8 @@ The project started as an XNU port for the Xiaomi Redmi Note 10 Pro (`sweet`, Qu
 | HFS+ ramdisk root | **Passed** — `/sbin/launchd` is loaded from a 64 MiB HFS+ image |
 | Init/syscalls | **Passed** — remount, file I/O, `mkdir`, `fork`/`exec`/`wait4`, `sysctl`, `mmap`, and `/dev/random` tests |
 | Display | Kernel framebuffer console verified at 1080×2400 |
-| SMP | Not working in the current setup; use `cpus=1` |
+| SMP | **Passed (2026-10-31)** — all 8 cores (4x A55, 3x A78, 1x X1) initialize with `cpus=8`; needed the GIC redistributor stride fix (0107) and a low-memory `CPU_ON` trampoline (0108). No long-run stability test yet; scheduler treats cores as equal |
+| Touch | **Works (2026-10-31)** — `touch_ts=1` (patch 0094, bit-banged I2C, S2DOS05 supplies power-cycled at boot by default); swipe-up unlocks. Display/UI reaches the iOS lock screen and home screen |
 | Exynos UFS (read-only) | **Passed** — host init, link startup (2 TX / 2 RX lanes), NOP OUT, `fDeviceInit`, GPT parse, and real partition reads (`vbmeta` shows `AVB0`); XNU's UFS block device is read-only |
 | HFS+ root on UFS | **Passed** — a 4 GiB file inside `userdata`, read through an extent map, mounts as `SWEETROOT`; `sweet-init` runs as PID 1. Extent stability of that file is not yet proven |
 | UFS HS-G4 | **Passed in boot tests, behind a boot-arg** — `PA_PWRMODE` changes from `0x55` to `0x11` and reads stay correct; speed not yet measured. The default remains PWM Gear 1 |
@@ -34,7 +37,8 @@ The project started as an XNU port for the Xiaomi Redmi Note 10 Pro (`sweet`, Qu
 - **Kernel/payload RAM window currently used by the shim:** `0x8c0000000`–`0x940000000` (a conservative 2 GiB window).
 - **UFS host controller:** Exynos 2100 UFS host at `0x13100000`; related regions include UniPro `0x13180000` and PMA `0x13104000`.
 - **UFS link (observed):** 2 TX / 2 RX lanes; host and device both report max HS gear 4. After the `0083` power-mode change `PA_PWRMODE` reads `0x11` (requested: G4, 2 lanes; gear and lane read-back are not logged yet).
-- **CPU:** secondary CPUs did not come up in the PSCI probe; use `cpus=1`.
+- **CPU:** 4x Cortex-A55 (MPIDR 0x000-0x300), 3x Cortex-A78 (0x400-0x600), 1x Cortex-X1 (0x700). PSCI `CPU_ON` over HVC works with context id 0 and an entry address below 4 GiB, so XNU uses a trampoline at physical `0x80300000`. `cpus=8` boots; use `CPUS=n ./boot0104.sh` to step down.
+- **GIC redistributors:** `GICR` `0x10240000`, 2 MiB window, 0x40000 per CPU (GICv4 layout).
 
 These values are from the current handoff and bring-up observations; they are not a complete hardware specification.
 
@@ -143,7 +147,7 @@ The SSH session dropping after `jumping` is expected when the phone transfers to
 | Path | Purpose |
 | --- | --- |
 | `shim/` | Bare-metal boot shim |
-| `xnu/patches/` | Ordered XNU patch series; currently numbered through `0083` (`0028` creates `bsd/dev/sweet_ufs.c`; `0083` adds the HS-G4 power-mode change) |
+| `xnu/patches/` | Ordered XNU patch series; currently numbered through `0108` (`0028` creates `bsd/dev/sweet_ufs.c`; `0083` adds HS-G4; `0107` GIC stride/PSCI/touch power-cycle; `0108` low-memory `CPU_ON` trampoline). Several Qualcomm-era patches are skipped by CI on the S21; see `NOTES.md` |
 | `.github/workflows/xnu.yml` | Kernel CI build |
 | `tools/mkadt.py` | Generates the Apple Device Tree |
 | `tools/mkpayload.py` | Packs kernel, ADT, boot arguments, and optional ramdisk |
