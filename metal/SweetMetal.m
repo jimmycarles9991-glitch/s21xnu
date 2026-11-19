@@ -1102,9 +1102,13 @@ static uint32_t sm_pass(sm_bo *desc, sm_bo *heap, uint64_t target_va, uint32_t w
 				continue;
 			}
 		}
+		const sm_shader *vs = r->vs, *fs = r->fs;
+		if (!vs) {
+			static int nl; if (nl++ < 12) slog("SweetMTL: skipping draw %u/%u: missing vertex shader (fs=%s)", i, ndraw, fs ? fs->name : "-");
+			continue;
+		}
 		uint8_t *P = cpu + base; uint64_t PV = D + base;
 		memset(P, 0, 0x1000);
-		const sm_shader *vs = r->vs, *fs = r->fs;
 		if (vs->size > 0x10000 || (fs && fs->size > 0x80000) || vs->cdata_size > 0x400 || (fs && fs->cdata_size > 0x400)) {
 			slog("SweetMTL: shader too large for the draw slot (vs %u fs %u)", vs->size, fs ? fs->size : 0);
 			continue;
@@ -2939,13 +2943,16 @@ static void sm_tag_surfaces(NSArray *passes, uint64_t t)
 			static sm_bo heap; static bool haveheap;
 			if (!haveheap) { haveheap = sm_bo_alloc(&heap, sm_is_poster(getprogname()) ? (1u << 20) : (4u << 20)); /* never written by the CPU (kernel pages come zeroed): no flush */ }
 			if (!haveheap) { _status = 5; continue; }
-			bool generic = true;
-			for (uint32_t i = 0; i < e->_ndraw; i++) if (!e->_draws[i].vs) generic = false;
+			bool generic = true, any_vs = false;
+			for (uint32_t i = 0; i < e->_ndraw; i++) { if (!e->_draws[i].vs) generic = false; else any_vs = true; }
 			uint32_t vs = 0;
-			if (generic) {
+			if (any_vs) {
 				/* prefix bisect (run125): for full-screen loaded passes after the unlock, save the target, run the pass, then
 				 * replay draws 0..k from the saved image and sample one pixel inside the black rectangle (600,300) and one in the
 				 * wallpaper (600,1500): the first k that turns the inside pixel black is the culprit */
+				if (!generic) {
+					static int nlg; if (nlg++ < 6) slog("SweetMTL: pass has draws with missing VS: using translated path and skipping them");
+				}
 				uint8_t *save = NULL; static int nbis2;
 				uint32_t W = (uint32_t)e.target.width, H = (uint32_t)e.target.height, bpr = (uint32_t)e.target.bytesPerRow;
 				/* the head layer offscreen is 1082x1226 / 1085x1227 / 1064x1150 depending on the zoom (run164): match a range */
@@ -2990,7 +2997,7 @@ static void sm_tag_surfaces(NSArray *passes, uint64_t t)
 					free(save);
 				}
 			} else {
-				/* no translated vertex shader: fixed Mesa shaders (phase 2b) */
+				/* no translated vertex shader at all: fixed Mesa shaders (phase 2b) */
 				uint32_t n = 0; for (uint32_t i = 0; i < e->_ndraw; i++) n += e->_draws[i].vcount;
 				_lastJobStatus = sm_draw(&desc, &heap, e.target.bo->gpu, (uint32_t)e.target.width, (uint32_t)e.target.height,
 				    (uint32_t)e.target.bytesPerRow, e.packed, bgra, n, &vs);
