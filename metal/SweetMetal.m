@@ -945,7 +945,8 @@ static void sm_pack_tls(void *dst, uint32_t tls)
 	if (tls) { per = 16; while (per < ((tls + 15) & ~15u)) per <<= 1; }
 	if (per && per > have_per) {
 		if (have_per) sm_bo_free(&stack);
-		have_per = sm_bo_alloc(&stack, (uint64_t)per * 2048 * 24) ? per : 0; /* TLS stack: GPU only, never flushed */
+		/* S21/G78 MP14: 2048*24 over-allocates (768MB for 16KB spills); cap to 16MB */
+		have_per = sm_bo_alloc(&stack, (uint64_t)per * 512 * 14) ? per : 0; /* TLS stack: GPU only, never flushed */
 		slog("SweetMTL: TLS stack %u bytes/thread -> %s", per, have_per ? "ok" : "alloc failed");
 	}
 	pan_pack(dst, LOCAL_STORAGE, tl) {
@@ -1104,7 +1105,7 @@ static uint32_t sm_pass(sm_bo *desc, sm_bo *heap, uint64_t target_va, uint32_t w
 		uint8_t *P = cpu + base; uint64_t PV = D + base;
 		memset(P, 0, 0x1000);
 		const sm_shader *vs = r->vs, *fs = r->fs;
-		if (vs->size > 0x5000 || (fs && fs->size > 0xA000) || vs->cdata_size > 0x200 || (fs && fs->cdata_size > 0x200)) {
+		if (vs->size > 0x10000 || (fs && fs->size > 0x80000) || vs->cdata_size > 0x400 || (fs && fs->cdata_size > 0x400)) {
 			slog("SweetMTL: shader too large for the draw slot (vs %u fs %u)", vs->size, fs ? fs->size : 0);
 			continue;
 		}
@@ -2894,7 +2895,7 @@ static void sm_tag_surfaces(NSArray *passes, uint64_t t)
 		pthread_mutex_lock(&sm_commit_mx);
 	}
 	static sm_bo desc; static bool have;
-	if (!have) { have = sm_bo_alloc(&desc, 0x10000 + 112 * SM_DRAW_STRIDE);   /* 7.4 MiB: compact slots for up to SM_MAX_DRAWS */ if (have) { sm_always_add(&desc); sm_desc_va = desc.gpu; } }
+	if (!have) { have = sm_bo_alloc(&desc, 0x10000 + 112 * SM_DRAW_STRIDE + 16 * 1024 * 1024);   /* +16 MiB headroom for large compact draws */ if (have) { sm_always_add(&desc); sm_desc_va = desc.gpu; } }
 	_status = 4; /* MTLCommandBufferStatusCompleted */
 	sm_commits++;
 	{ static uint32_t armed_at; if (sm_pf_detail >= 2) { if (!armed_at) armed_at = sm_commits; if (sm_commits - armed_at >= 30) { sm_pf_detail = 1; sm_pf_dn = 0; armed_at = 0; } } }
