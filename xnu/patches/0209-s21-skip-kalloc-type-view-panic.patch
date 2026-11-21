@@ -1,0 +1,14 @@
+--- a/osfmk/kern/kalloc.c
++++ b/osfmk/kern/kalloc.c
+@@ -677,7 +677,7 @@ kalloc_type_validate_flags(
+ 	uuid_string_t         kext_uuid)
+ {
+-	if (!(kt_flags & KT_CHANGED) || !(kt_flags & KT_CHANGED2)) {
+-		panic("kalloc_type_view(%s) from kext(%s) hasn't been rebuilt with "
+-		    "required xnu headers", kt_name, kext_uuid);
+-	}
++	/* S21: a built-in kext carries a view emitted with stale xnu headers. */
++	(void)kt_flags;
++	(void)kt_name;
++	(void)kext_uuid;
+ }

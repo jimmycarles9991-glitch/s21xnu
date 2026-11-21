@@ -1,43 +1,191 @@
+
 name: userland
 on:
   workflow_dispatch:
+
 jobs:
   build:
     runs-on: macos-15-intel
+
     steps:
       - uses: actions/checkout@v4
+
       - name: Mesa headers (panfrost genxml packers)
         run: |
+          set -euo pipefail
           git clone -q --depth 1 -b mesa-24.1.7 https://gitlab.freedesktop.org/mesa/mesa.git mesa
           mkdir -p gx/genxml
-          for p in common v9; do python3 mesa/src/panfrost/lib/genxml/gen_pack.py mesa/src/panfrost/lib/genxml/$p.xml > gx/genxml/${p}_pack.h; done
+          for p in common v9; do
+            python3 mesa/src/panfrost/lib/genxml/gen_pack.py \
+              mesa/src/panfrost/lib/genxml/$p.xml > gx/genxml/${p}_pack.h
+          done
           ls -la gx/genxml
+
+      - name: Mesa 26.2.5 (Darwin/Panfrost patches for the S21 shim)
+        run: |
+          set -euo pipefail
+          git clone -q --depth 1 -b mesa-26.2.5 \
+            https://gitlab.freedesktop.org/mesa/mesa.git mesa26
+          cd mesa26
+          for p in "$GITHUB_WORKSPACE"/userland/patches/mesa-26.2.5/*.patch; do
+            echo "Applying $(basename "$p")"
+            git apply "$p"
+          done
+          git status --short
+
+      - name: S21 SweetMali/Panfrost shim host test (fake IOKit)
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/s21shim
+          clang -O1 -Wall -Wextra -Werror -pthread -DS21_DRM_HOST_TEST \
+            -Iuserland/sweetdrm \
+            -isystem "$PWD/mesa26/include" \
+            -isystem "$PWD/mesa26/src/panfrost/darwin_drm" \
+            -isystem "$PWD/mesa26/src" \
+            userland/sweetdrm/s21_sweet_drm.c \
+            userland/sweetdrm/fake_iokit.c \
+            userland/sweetdrm/host_test.c \
+            -o /tmp/s21shim/s21_sweetdrm_host_test
+          /tmp/s21shim/s21_sweetdrm_host_test
+
       - name: Build iOS arm64 tools
         run: |
+          set -euo pipefail
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-          M=$PWD/mesa; G=$PWD/gx
+          M=$PWD/mesa
+          G=$PWD/gx
           mkdir -p out
+
           for f in userland/*.c; do
             n=$(basename "$f" .c)
-            xcrun clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=16.0 -O2 -framework IOKit \
-              -I$G -I$M/src/panfrost/lib -I$M/src/panfrost -I$M/include -I$M/src -I$M/src/panfrost/include -I$M/src/compiler \
+            xcrun clang -arch arm64 -isysroot "$SDK" \
+              -miphoneos-version-min=16.0 -O2 -framework IOKit \
+              -I$G -I$M/src/panfrost/lib -I$M/src/panfrost \
+              -I$M/include -I$M/src -I$M/src/panfrost/include \
+              -I$M/src/compiler "$f" -o "out/$n"
+            codesign -f -s - "out/$n"
+          done
+
+          for f in userland/*.m; do
+            n=$(basename "$f" .m)
+            xcrun clang -arch arm64 -isysroot "$SDK" \
+              -miphoneos-version-min=16.0 -O2 -fobjc-arc \
+              -framework Foundation -framework Metal -framework IOKit \
+              -framework AVFoundation -framework CoreMedia \
+              -framework VideoToolbox -framework CoreVideo -framework QuartzCore \
               "$f" -o "out/$n"
             codesign -f -s - "out/$n"
           done
-          for f in userland/*.m; do
-            n=$(basename "$f" .m)
-            xcrun clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=16.0 -O2 -fobjc-arc \
-              -framework Foundation -framework Metal -framework IOKit -framework AVFoundation -framework CoreMedia \
-              -framework VideoToolbox -framework CoreVideo -framework QuartzCore "$f" -o "out/$n"
-            codesign -f -s - "out/$n"
-          done
+
           mkdir -p out/SweetMetal.bundle
-          xcrun clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=16.0 -O2 -fobjc-arc -bundle -Wno-protocol -Wno-incomplete-implementation -Wno-objc-protocol-property-synthesis -Wno-objc-property-implementation \
-            -I$G -I$M/src/panfrost/lib -I$M/src/panfrost -I$M/include -I$M/src -I$M/src/panfrost/include -I$M/src/compiler -framework Foundation -framework IOKit -framework IOSurface -framework Metal -Wl,-U,'_OBJC_CLASS_$__MTLDevice' -Wl,-U,'_OBJC_METACLASS_$__MTLDevice' metal/SweetMetal.m metal/astc_dec.c -lz -o out/SweetMetal.bundle/SweetMetal
+
+          xcrun clang -arch arm64 -isysroot "$SDK" \
+            -miphoneos-version-min=16.0 -O2 -fobjc-arc -bundle \
+            -Wno-protocol -Wno-incomplete-implementation \
+            -Wno-objc-protocol-property-synthesis \
+            -Wno-objc-property-implementation \
+            -I$G -I$M/src/panfrost/lib -I$M/src/panfrost \
+            -I$M/include -I$M/src -I$M/src/panfrost/include \
+            -I$M/src/compiler \
+            -framework Foundation -framework IOKit \
+            -framework IOSurface -framework Metal \
+            -Wl,-U,'_OBJC_CLASS_$__MTLDevice' \
+            -Wl,-U,'_OBJC_METACLASS_$__MTLDevice' \
+            metal/SweetMetal.m metal/astc_dec.c -lz \
+            -o out/SweetMetal.bundle/SweetMetal
+
           cp metal/Info.plist out/SweetMetal.bundle/Info.plist
           codesign -f -s - out/SweetMetal.bundle/SweetMetal
-          ls -la out out/SweetMetal.bundle
-      - uses: actions/upload-artifact@v4
+
+      - name: Build S21 SweetMali libdrm dylib (iOS arm64)
+        run: |
+          set -euo pipefail
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          M=$PWD/mesa26
+          mkdir -p out
+          xcrun clang -arch arm64 -isysroot "$SDK" \
+            -miphoneos-version-min=16.0 -O2 -dynamiclib \
+            -framework IOKit \
+            -I"$M/include" -I"$M/src/panfrost/darwin_drm" -I"$M/src" \
+            userland/sweetdrm/s21_sweet_drm.c -o out/libs21sweetdrm.dylib
+          codesign -f -s - out/libs21sweetdrm.dylib
+          xcrun lipo -info out/libs21sweetdrm.dylib
+
+      - name: Install Meson for the iOS Mesa cross-build
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/meson-venv"
+          "$RUNNER_TEMP/meson-venv/bin/pip" install -q meson mako packaging pyyaml
+          echo "$RUNNER_TEMP/meson-venv/bin" >> "$GITHUB_PATH"
+          # macOS /usr/bin/bison is 2.3, which Mesa 26 rejects; use Homebrew's.
+          brew install -q bison flex
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix flex)/bin" >> "$GITHUB_PATH"
+          "$(brew --prefix bison)/bin/bison" --version | head -1
+          "$RUNNER_TEMP/meson-venv/bin/meson" --version
+
+      - name: Cross-build Mesa Panfrost + s21-gl-clear (iOS arm64)
+        run: |
+          set -euo pipefail
+          export PATH="$RUNNER_TEMP/meson-venv/bin:$PATH"
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          CC=$(xcrun -f clang)
+          CXX=$(xcrun -f clang++)
+          AR=$(xcrun -f ar)
+          STRIP=$(xcrun -f strip)
+
+          # The checked-in PAN_ARCH=9 blobs replace the host CLC tools.
+          mkdir -p "$PWD/mesa26/src/panfrost/libpan/prebuilt-v9"
+          cp userland/prebuilt/panfrost-shaders/v9/* \
+            "$PWD/mesa26/src/panfrost/libpan/prebuilt-v9/"
+          cp userland/sweetdrm/s21_gl_clear_test.c \
+             userland/sweetdrm/s21_sweet_drm.c \
+             userland/sweetdrm/s21_sweet_drm.h \
+             "$PWD/mesa26/src/gallium/drivers/panfrost/"
+
+          cat > ios-arm64.cross <<EOF
+          [binaries]
+          c = '$CC'
+          cpp = '$CXX'
+          objc = '$CC'
+          objcpp = '$CXX'
+          ar = '$AR'
+          strip = '$STRIP'
+          pkg-config = 'false'
+
+          [host_machine]
+          system = 'darwin'
+          cpu_family = 'aarch64'
+          cpu = 'arm64'
+          endian = 'little'
+
+          [properties]
+          needs_exe_wrapper = true
+
+          [built-in options]
+          c_args = ['-arch', 'arm64', '-isysroot', '$SDK', '-miphoneos-version-min=16.0']
+          cpp_args = ['-arch', 'arm64', '-isysroot', '$SDK', '-miphoneos-version-min=16.0']
+          objc_args = ['-arch', 'arm64', '-isysroot', '$SDK', '-miphoneos-version-min=16.0']
+          objcpp_args = ['-arch', 'arm64', '-isysroot', '$SDK', '-miphoneos-version-min=16.0']
+          c_link_args = ['-arch', 'arm64', '-isysroot', '$SDK', '-miphoneos-version-min=16.0']
+          cpp_link_args = ['-arch', 'arm64', '-isysroot', '$SDK', '-miphoneos-version-min=16.0']
+          objc_link_args = ['-arch', 'arm64', '-isysroot', '$SDK', '-miphoneos-version-min=16.0']
+          objcpp_link_args = ['-arch', 'arm64', '-isysroot', '$SDK', '-miphoneos-version-min=16.0']
+          EOF
+
+          meson setup mesa26-build mesa26 \
+            --cross-file ios-arm64.cross --wrap-mode=nodownload \
+            -Ddarwin-drm=true -Ds21-prebuilt-shaders=true -Dmesa-clc=system \
+            -Dgallium-drivers=panfrost -Dvulkan-drivers=[] \
+            -Dgbm=disabled -Degl=disabled -Dglx=disabled -Dplatforms=[] \
+            -Dbuild-tests=false -Dllvm=disabled -Dzstd=disabled
+          ninja -C mesa26-build src/gallium/drivers/panfrost/s21-gl-clear
+          cp mesa26-build/src/gallium/drivers/panfrost/s21-gl-clear out/
+          codesign -f -s - out/s21-gl-clear
+          xcrun lipo -info out/s21-gl-clear
+
+      - name: Upload iOS tools
+        uses: actions/upload-artifact@v4
         with:
           name: ios-tools
           path: out/

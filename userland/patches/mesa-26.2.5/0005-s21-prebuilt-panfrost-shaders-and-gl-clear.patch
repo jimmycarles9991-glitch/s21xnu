@@ -1,0 +1,146 @@
+diff --git a/meson.build b/meson.build
+index 8c4fecf..ea37e6e 100644
+--- a/meson.build
++++ b/meson.build
+@@ -962,7 +962,13 @@ with_driver_using_cl = [
+   with_kosmickrisp_vk,
+ ].contains(true)
+ 
+-if get_option('mesa-clc') == 'system'
++if get_option('s21-prebuilt-shaders')
++  # S21 iOS build: PAN_ARCH=9 shaders are checked in, so no host LLVM tools
++  # are needed at build time.
++  with_clc = false
++  prog_mesa_clc = find_program('true', native : true)
++  prog_vtn_bindgen2 = find_program('true', native : true)
++elif get_option('mesa-clc') == 'system'
+   prog_mesa_clc = find_program('mesa_clc', native : true)
+   prog_vtn_bindgen2 = find_program('vtn_bindgen2', native : true)
+   # Even with mesa-clc already built, rusticl still needs clc.
+diff --git a/meson.options b/meson.options
+index b955204..e67dfb1 100644
+--- a/meson.options
++++ b/meson.options
+@@ -923,3 +923,11 @@ option(
+   description : 'Darwin/iOS only: use the fake libdrm in src/panfrost/darwin_drm instead of a real libdrm. ' +
+                 'The embedding library has to provide the drm* functions it declares.'
+ )
++
++option(
++  's21-prebuilt-shaders',
++  type : 'boolean',
++  value : false,
++  description : 'S21 only: use prebuilt PAN_ARCH=9 libpan shaders instead of running mesa_clc/vtn_bindgen2. ' +
++                'Avoids needing LLVM when cross-compiling for iOS.'
++)
+diff --git a/src/panfrost/meson.build b/src/panfrost/meson.build
+index cb928b1..6779cd6 100644
+--- a/src/panfrost/meson.build
++++ b/src/panfrost/meson.build
+@@ -41,12 +41,33 @@ endif
+ 
+ subdir('compiler')
+ 
+-if with_gallium_panfrost or with_panfrost_vk or with_tools.contains('panfrost')
+-  subdir('clc')
++if get_option('s21-prebuilt-shaders')
++  # PAN_ARCH=9 only (S21 Mali-G78). The prebuilt files are generated from
++  # src/panfrost/libpan/*.cl by mesa_clc + vtn_bindgen2 + panfrost_compile on
++  # a Linux x86_64 host and copied into src/panfrost/libpan/prebuilt-v9/ by
++  # the S21 userland CI job.
++  idep_libpan_per_arch = {}
++  idep_libpan_cur_ver = declare_dependency(
++    sources : files(
++      'libpan/prebuilt-v9/libpan_v9.cpp',
++      'libpan/prebuilt-v9/libpan_v9.h',
++      'libpan/prebuilt-v9/libpan_shaders_v9.c',
++      'libpan/prebuilt-v9/libpan_shaders_v9.h',
++    ),
++    include_directories : include_directories('libpan/prebuilt-v9'),
++  )
++  idep_libpan_per_arch += {'9' : idep_libpan_cur_ver}
++else
++  if with_gallium_panfrost or with_panfrost_vk or with_tools.contains('panfrost')
++    subdir('clc')
++  endif
++
++  if with_gallium_panfrost or with_panfrost_vk
++     subdir('libpan')
++  endif
+ endif
+ 
+ if with_gallium_panfrost or with_panfrost_vk
+-   subdir('libpan')
+    subdir('perf')
+ endif
+ 
+diff --git a/src/gallium/drivers/panfrost/meson.build b/src/gallium/drivers/panfrost/meson.build
+index 4118b24..3fde756 100644
+--- a/src/gallium/drivers/panfrost/meson.build
++++ b/src/gallium/drivers/panfrost/meson.build
+@@ -83,7 +83,7 @@ if with_perfetto
+   files_panfrost += 'panfrost_perfetto.cc'
+ endif
+ 
+-panfrost_versions = ['4', '5', '6', '7', '9', '10', '12', '13', '14']
++panfrost_versions = ['9']
+ libpanfrost_versions = []
+ 
+ foreach ver : panfrost_versions
+@@ -125,3 +125,15 @@ driver_panfrost = declare_dependency(
+   compile_args : compile_args_panfrost,
+   link_with : [libpanfrost, libpanfrostwinsys, libpanfrost_shared, libpanfrost_compiler, libpanfrost_decode, libpanfrost_lib],
+ )
++
++if get_option('s21-prebuilt-shaders')
++  executable(
++    's21-gl-clear',
++    ['s21_gl_clear_test.c', 's21_sweet_drm.c'],
++    include_directories : panfrost_includes,
++    link_with : [libmesa, libglapi, libgallium],
++    dependencies : [driver_panfrost, dep_libdrm, idep_mesautil, idep_xmlconfig],
++    link_args : ['-framework', 'IOKit'],
++    install : false,
++  )
++endif
+diff --git a/src/gallium/drivers/panfrost/pan_screen.c b/src/gallium/drivers/panfrost/pan_screen.c
+index 23659ae..bf221cb 100644
+--- a/src/gallium/drivers/panfrost/pan_screen.c
++++ b/src/gallium/drivers/panfrost/pan_screen.c
+@@ -1144,35 +1144,11 @@ panfrost_create_screen(int fd, const struct pipe_screen_config *config,
+          pan_get_nir_shader_compiler_options(dev->arch, i, false);
+ 
+    switch (dev->arch) {
+-   case 4:
+-      panfrost_cmdstream_screen_init_v4(screen);
+-      break;
+-   case 5:
+-      panfrost_cmdstream_screen_init_v5(screen);
+-      break;
+-   case 6:
+-      panfrost_cmdstream_screen_init_v6(screen);
+-      break;
+-   case 7:
+-      panfrost_cmdstream_screen_init_v7(screen);
+-      break;
+    case 9:
+       panfrost_cmdstream_screen_init_v9(screen);
+       break;
+-   case 10:
+-      panfrost_cmdstream_screen_init_v10(screen);
+-      break;
+-   case 12:
+-      panfrost_cmdstream_screen_init_v12(screen);
+-      break;
+-   case 13:
+-      panfrost_cmdstream_screen_init_v13(screen);
+-      break;
+-   case 14:
+-      panfrost_cmdstream_screen_init_v14(screen);
+-      break;
+    default:
+-      debug_printf("panfrost: Unhandled architecture major %d", dev->arch);
++      debug_printf("panfrost: S21 build supports only architecture 9 (got %d)", dev->arch);
+       panfrost_destroy_screen(&(screen->base));
+       return NULL;
+    }
