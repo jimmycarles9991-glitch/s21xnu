@@ -74,7 +74,14 @@ fi
 # default 2 gives the render server a device; 4 allows all clients and adds untranslated shaders.
 GPUCOMP=${GPUCOMP:-1}
 SWEETMETAL=${SWEETMETAL:-2}
-CMDLINE="-v debug=0xc serial=3 cpus=${CPUS:-8} keepsyms=1 sweetfb_noconsole=1 sweetfb_hz=30 sweetusb=0 sweetkeys=0 sweettouch=0 touch_ts=1 sweetbattery=0 rd=ufsroot0 ufsroot=userdata ufshs=1 ufsov=1 s21usb=3 ufsovmb=1024 rootrw=1 unentitled_ios_sim_launch=1 sweethidf=${F:-0} sweetpcie=${PCIE_LEVEL}${WIFI_CMD} mali=1 $SCR sweetmetal=${SWEETMETAL} sweetgpucomp=${GPUCOMP} sweetstay=1"
+# -v makes XNU draw verbose text into the framebuffer console immediately;
+# sweetfb_noconsole=1 only mutes it at the first swap (patch 0067), so the text
+# scrolls over the shim's centered Apple logo before iOS's boot layer appears.
+# Default off so the logo stays visible; VERBOSE=1 restores it for debugging.
+VERBOSE=${VERBOSE:-0}
+VARG=""
+[ "$VERBOSE" = 1 ] && VARG="-v "
+CMDLINE="${VARG}debug=0xc serial=3 cpus=${CPUS:-8} keepsyms=1 sweetfb_noconsole=1 sweetfb_hz=30 sweetusb=0 sweetkeys=0 sweettouch=0 touch_ts=1 sweetbattery=0 rd=ufsroot0 ufsroot=userdata ufshs=1 ufsov=1 s21usb=3 ufsovmb=1024 rootrw=1 unentitled_ios_sim_launch=1 sweethidf=${F:-0} sweetpcie=${PCIE_LEVEL}${WIFI_CMD} mali=1 $SCR sweetmetal=${SWEETMETAL} sweetgpucomp=${GPUCOMP} sweetstay=1"
 echo "GPU args: mali=1 $SCR sweetmetal=${SWEETMETAL} sweetgpucomp=${GPUCOMP} sweetstay=1 (hojun-style base: cpus=${CPUS:-8} sweetfb_noconsole=1 sweetbattery=0 s21usb=3)"
 echo "CMDLINE: $CMDLINE"
 
