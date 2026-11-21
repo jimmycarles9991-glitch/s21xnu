@@ -19,7 +19,7 @@ scp() { python3 "$SSH_PW_HELPER" scp "$@"; }
 
 cd ~/ios-sweet
 mkdir -p kern-hojun
-KERNEL_SRC=${KERNEL_SRC:-/home/tom/Downloads/hojun-latest/extract/14496999309.zip/kernel.development.sweet}
+KERNEL_SRC=${KERNEL_SRC:-/home/tom/Downloads/hojun-latest/extract/1a1a81f-kernel.development.sweet}
 cp "$KERNEL_SRC" kern-hojun/kernel.development.sweet
 K=$PWD/kern-hojun/kernel.development.sweet
 
@@ -44,6 +44,7 @@ echo "Kernel: $K ($(sha256sum "$K" | awk '{print $1}')), cap=$CAP"
 grep -a -q 'no gpu_scratch boot-arg' "$K" || { echo "STOP: kernel lacks the Mali core driver (0111)"; exit 1; }
 grep -a -q 'sweetgpucomp' "$K" || { echo "STOP: kernel lacks sweetgpucomp (0121)"; exit 1; }
 grep -a -q 'sweetmetal' "$K" || { echo "STOP: kernel lacks sweetmetal/IOAcceleratorES support"; exit 1; }
+grep -a -q 'fb src %u layer' "$K" || { echo "STOP: kernel lacks 0208 source probe (old kernel?)"; exit 1; }
 
 ssh -F /dev/null root@192.168.1.66 'sync; filefrag -v /mnt/android-data/linux/iosroot.img' > /tmp/ff-hojun-gpu.txt
 python3 /home/tom/s21xnu-main/tools/mkufsmap.py /tmp/ff-hojun-gpu.txt ufsmap-hojun-gpu.bin
