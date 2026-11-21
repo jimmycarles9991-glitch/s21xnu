@@ -5,6 +5,10 @@ recovery/
 # third-party/Apple sources fetched for reading
 research/
 shim/out/
+# generated from Apple's ProgressUI artwork at build time: never commit
+shim/applelogo.h
+# third-party source fetched for reading (Jesvi-iOS-main.zip extracted here)
+s20/Jesvi-iOS-main/
 xnu/out/
 xnu/out-*/
 __pycache__/
