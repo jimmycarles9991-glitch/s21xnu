@@ -103,6 +103,10 @@ jobs:
         run: |
           grep -q 'sweet_console_muted' dxb/xnu/osfmk/console/serial_console.c
           xcrun nm -gU dxb/fakeroot/System/Library/Kernels/kernel.development.sweet | grep -q '_sweet_console_muted'
+      - name: Verify framebuffer source probe (0208)
+        run: |
+          grep -q 'fb src %u layer' dxb/xnu/iokit/Kernel/arm/SweetFramebuffer.cpp
+          grep -a -q 'fb src %u layer' dxb/fakeroot/System/Library/Kernels/kernel.development.sweet
 
       - name: Package build tree for local compiles
         if: always()
