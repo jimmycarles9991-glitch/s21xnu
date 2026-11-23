@@ -23,7 +23,9 @@ command -v ninja >/dev/null || { echo "ninja required (pip install meson ninja)"
 command -v python3 >/dev/null || { echo "python3 required" >&2; exit 1; }
 [[ -d "$SDK" ]] || { echo "SDK missing: $SDK" >&2; exit 1; }
 
+SPIRV_TOOLS_PREFIX=""
 if command -v brew >/dev/null 2>&1; then
+   SPIRV_TOOLS_PREFIX=$(brew --prefix spirv-tools 2>/dev/null || true)
    LLVM_PREFIX=$(brew --prefix llvm 2>/dev/null || true)
    if [[ -n "$LLVM_PREFIX" && -x "$LLVM_PREFIX/bin/llvm-config" ]]; then
       export PATH="$LLVM_PREFIX/bin:$PATH"
@@ -120,9 +122,11 @@ llvm-config = ['$LLVM_CONFIG']
 [properties]
 sys_root = '$SDK'
 c_args = ['-arch', 'arm64', '-isysroot', '$SDK', '-miphoneos-version-min=$IOS_MIN',
-          '-DS21_IOS', '-I$HERE/shim', '-I$HERE/include']
+          '-DS21_IOS', '-I$HERE/shim', '-I$HERE/include'
+          ${SPIRV_TOOLS_PREFIX:+, '-I$SPIRV_TOOLS_PREFIX/include'}]
 cpp_args = ['-arch', 'arm64', '-isysroot', '$SDK', '-miphoneos-version-min=$IOS_MIN',
-            '-DS21_IOS', '-I$HERE/shim', '-I$HERE/include']
+            '-DS21_IOS', '-I$HERE/shim', '-I$HERE/include'
+            ${SPIRV_TOOLS_PREFIX:+, '-I$SPIRV_TOOLS_PREFIX/include'}]
 c_link_args = ['-arch', 'arm64', '-isysroot', '$SDK', '-miphoneos-version-min=$IOS_MIN',
                '-L$OUT_DIR', '-ls21drm']
 
