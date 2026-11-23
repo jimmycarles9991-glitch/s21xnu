@@ -81,6 +81,10 @@ The kernel GPU driver and display handoff already exist in this tree.
 - [x] `tools/linux-mesa-ios/test/s21_gpu_test.c`: surfaceless GLES3 clear/readback
       with `S21GPU: ... PASS/FAIL` output; the signed arm64 binary is in the
       `ios-mesa-g78` artifact and links only the shipped `@rpath` dylibs.
+- [x] Image staged on device (2026-11-23, user approved): `/data/linux/iosroot.img`
+      SHA-256 `90a9a1223cf2036c1dfbe6972cda41f96e84e5ecc086e9a897121b7e9043de0d`,
+      root:root 644, matches the host image byte-for-byte. `com.s21.gputest` is in
+      the cached launchd bootstrap; `com.s21.glclear` was removed.
 - [ ] Clear+readback and textured quad through Mesa Panfrost on the G78, with a
       full-screen PASS/FAIL colour on the panel so the result is visible without a shell.
 - [ ] Present into an IOSurface-backed layer using the existing framebuffer path.
