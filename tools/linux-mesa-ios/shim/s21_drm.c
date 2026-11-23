@@ -19,8 +19,10 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/eventfd.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/timerfd.h>
 #include <unistd.h>
 
 #include "xf86drm.h"
@@ -250,6 +252,57 @@ int
 drmCommandWriteRead(int fd, unsigned int command, void *data, unsigned int size)
 {
    return drmIoctl(fd, _IOWR('d', command, size), data);
+}
+
+/* Panfrost's kmod backend uses eventfd/timerfd only for optional perf sessions.
+ * Those are never enabled here; the declarations let it compile and these
+ * stubs let the dylib link. */
+int
+eventfd(unsigned int initval, int flags)
+{
+   (void)initval; (void)flags;
+   errno = ENOSYS;
+   return -1;
+}
+
+int
+eventfd_read(int fd, eventfd_t *value)
+{
+   (void)fd; (void)value;
+   errno = ENOSYS;
+   return -1;
+}
+
+int
+eventfd_write(int fd, eventfd_t value)
+{
+   (void)fd; (void)value;
+   errno = ENOSYS;
+   return -1;
+}
+
+int
+timerfd_create(int clockid, int flags)
+{
+   (void)clockid; (void)flags;
+   errno = ENOSYS;
+   return -1;
+}
+
+int
+timerfd_settime(int fd, int flags, const void *new_value, void *old_value)
+{
+   (void)fd; (void)flags; (void)new_value; (void)old_value;
+   errno = ENOSYS;
+   return -1;
+}
+
+int
+timerfd_gettime(int fd, void *curr_value)
+{
+   (void)fd; (void)curr_value;
+   errno = ENOSYS;
+   return -1;
 }
 
 /* iOS has no DRM device tree. These stubs only need to satisfy libloader's
