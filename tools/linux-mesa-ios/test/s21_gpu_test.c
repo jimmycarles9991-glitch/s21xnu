@@ -93,7 +93,7 @@ finish(const char *stage, int ok, unsigned char r, unsigned char g,
 }
 
 static int
-near(byte got, int want)
+near(unsigned char got, int want)
 {
    return abs((int)got - want) <= 24;
 }
