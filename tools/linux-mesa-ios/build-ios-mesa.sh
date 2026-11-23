@@ -38,6 +38,8 @@ if command -v brew >/dev/null 2>&1; then
    done
 fi
 command -v llvm-config >/dev/null || { echo "llvm-config required (brew install llvm)" >&2; exit 1; }
+LLVM_CONFIG=$(command -v llvm-config)
+export LLVM_CONFIG
 
 mkdir -p "$WORK_DIR" "$OUT_DIR"
 TARBALL="$WORK_DIR/mesa-${MESA_VERSION}.tar.xz"
@@ -81,6 +83,7 @@ objcxx = ['xcrun', '-sdk', 'iphoneos', 'clang++']
 ar = ['xcrun', '-sdk', 'iphoneos', 'ar']
 strip = ['xcrun', '-sdk', 'iphoneos', 'strip']
 pkg-config = ['pkg-config']
+llvm-config = ['$LLVM_CONFIG']
 
 [properties]
 sys_root = '$SDK'
