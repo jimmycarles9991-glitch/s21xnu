@@ -174,8 +174,8 @@ for f in "$OUT_DIR"/*.dylib; do install_name_fix "$f"; done
 
 # One-process GLES smoke test. It prints and writes the clear colour.
 xcrun clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min="$IOS_MIN" \
-   -O2 -I"$MESA/include" -I"$HERE/test" \
-   -L"$OUT_DIR" -lEGL -lGLESv2 -Wl,-rpath,@executable_path \
+   -O2 -I"$MESA/include" -I"$HERE/test" -I"$HERE/shim" \
+   -L"$OUT_DIR" -lEGL -lGLESv2 -ls21drm -Wl,-rpath,@executable_path \
    "$HERE/test/s21_gpu_test.c" -o "$OUT_DIR/s21-gpu-test"
 codesign -f -s - "$OUT_DIR/s21-gpu-test"
 

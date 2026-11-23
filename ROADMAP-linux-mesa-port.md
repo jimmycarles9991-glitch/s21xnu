@@ -87,6 +87,9 @@ The kernel GPU driver and display handoff already exist in this tree.
       the cached launchd bootstrap; `com.s21.glclear` was removed.
 - [ ] Clear+readback and textured quad through Mesa Panfrost on the G78, with a
       full-screen PASS/FAIL colour on the panel so the result is visible without a shell.
+      The test source now logs every stage through SweetMali selector 5 (`sweet_mali:
+      user: S21GPU: ...`) and paints the real scanout via selector 6 (green PASS,
+      red FAIL, repainted every 50 ms); this is pending a CI rebuild and device proof.
 - [ ] Present into an IOSurface-backed layer using the existing framebuffer path.
 
 ### Phase 4 — backboardd integration
