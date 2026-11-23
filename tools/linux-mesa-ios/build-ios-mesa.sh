@@ -139,13 +139,15 @@ EOF
 
 BUILD="$WORK_DIR/build"
 rm -rf "$BUILD"
+# The iOS target must not link macOS/Homebrew SPIRV-Tools. Shader compilation
+# is handled by the native mesa_clc/panfrost_compile tools built above.
 meson setup "$BUILD" "$MESA" --cross-file "$CROSS" \
    --wrap-mode=nofallback --buildtype=release \
    -Dprefix=/usr/local/s21-mesa -Dlibdir=lib \
    -Dgallium-drivers=panfrost -Dvulkan-drivers= -Dplatforms= \
    -Dglx=disabled -Dgles1=disabled -Dgles2=enabled -Degl=enabled -Dgbm=disabled \
    -Dglvnd=disabled -Dllvm=enabled -Dmesa-clc=system -Dprecomp-compiler=system -Dpanfrost-rust=false \
-   -Dzstd=disabled -Dxmlconfig=disabled -Dexpat=disabled \
+   -Dspirv-tools=disabled -Dzstd=disabled -Dxmlconfig=disabled -Dexpat=disabled \
    -Dshader-cache=enabled -Dshader-cache-default=false -Dvalgrind=disabled \
    -Dlibunwind=disabled -Dvideo-codecs= -Dtools= -Dbuild-tests=false \
    -Dgallium-va=disabled -Dlmsensors=disabled
