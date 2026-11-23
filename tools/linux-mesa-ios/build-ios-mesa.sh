@@ -73,6 +73,24 @@ xcrun clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min="$IOS_MIN" \
    -Wl,-install_name,@rpath/libs21drm.dylib -o "$SHIM"
 codesign -f -s - "$SHIM"
 
+# Mesa's CLC shader compiler tools must be built for the Mac (build machine)
+# and then reused with -Dmesa-clc=system; a cross build cannot link its native
+# vtn_bindgen2 against host libraries.
+CLC_BUILD="$WORK_DIR/native-clc"
+rm -rf "$CLC_BUILD"
+meson setup "$CLC_BUILD" "$MESA" \
+   --wrap-mode=nofallback --buildtype=release \
+   -Dprefix="$WORK_DIR/clc-prefix" -Dlibdir=lib \
+   -Dgallium-drivers= -Dvulkan-drivers= -Dplatforms= \
+   -Dglx=disabled -Dgles1=disabled -Dgles2=disabled -Degl=disabled -Dgbm=disabled \
+   -Dglvnd=disabled -Dllvm=enabled -Dmesa-clc=enabled -Dinstall-mesa-clc=true \
+   -Dzstd=disabled -Dxmlconfig=disabled -Dexpat=disabled \
+   -Dvalgrind=disabled -Dlibunwind=disabled -Dvideo-codecs= -Dtools= \
+   -Dbuild-tests=false -Dgallium-va=disabled -Dlmsensors=disabled
+ninja -C "$CLC_BUILD" mesa_clc vtn_bindgen2
+
+export PATH="$CLC_BUILD/src/compiler/clc:$CLC_BUILD/src/compiler/spirv:$PATH"
+
 CROSS="$WORK_DIR/ios-arm64.cross"
 cat > "$CROSS" <<EOF
 [binaries]
@@ -108,7 +126,7 @@ meson setup "$BUILD" "$MESA" --cross-file "$CROSS" \
    -Dprefix=/usr/local/s21-mesa -Dlibdir=lib \
    -Dgallium-drivers=panfrost -Dvulkan-drivers= -Dplatforms= \
    -Dglx=disabled -Dgles1=disabled -Dgles2=enabled -Degl=enabled -Dgbm=disabled \
-   -Dglvnd=disabled -Dllvm=enabled -Dpanfrost-rust=false \
+   -Dglvnd=disabled -Dllvm=enabled -Dmesa-clc=system -Dpanfrost-rust=false \
    -Dzstd=disabled -Dxmlconfig=disabled -Dexpat=disabled \
    -Dshader-cache=enabled -Dshader-cache-default=false -Dvalgrind=disabled \
    -Dlibunwind=disabled -Dvideo-codecs= -Dtools= -Dbuild-tests=false \
