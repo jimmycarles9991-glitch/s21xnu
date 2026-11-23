@@ -70,7 +70,7 @@ def main() -> int:
          '''#include "pipe-loader/pipe_loader.h"
 #ifdef S21_IOS
 #include "util/xmlconfig.h"
-#include "panfrost/drm/panfrost_drm_public.h"
+#include "gallium/winsys/panfrost/drm/panfrost_drm_public.h"
 #endif
 '''),
         ('''dri2_init_screen(struct dri_screen *screen, bool driver_name_is_inferred)
