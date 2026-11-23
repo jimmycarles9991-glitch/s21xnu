@@ -17,6 +17,14 @@
 extern "C" {
 #endif
 
+/* macOS omits sched_setscheduler() from its system headers; the Panfrost
+ * kmod perf thread calls it. Declared here because this is the compatibility
+ * header that panfrost_kmod.c already includes. struct sched_param comes from
+ * <pthread.h>, which that file includes first. */
+#ifdef __APPLE__
+int sched_setscheduler(int pid, int policy, const struct sched_param *param);
+#endif
+
 /* Use libdrm's name so this stays compatible if drm-uapi/drm.h is included
  * first. It deliberately does not define struct drm_version, which drm.h owns. */
 typedef struct _drmVersion {

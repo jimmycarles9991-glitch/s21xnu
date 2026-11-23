@@ -15,7 +15,6 @@
 
 #include <errno.h>
 #include <pthread.h>
-#include <sched.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
