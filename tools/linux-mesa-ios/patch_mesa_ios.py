@@ -72,7 +72,6 @@ def main() -> int:
 #include "util/xmlconfig.h"
 #include "util/driconf.h"
 #include "pipe-loader/pipe_loader_priv.h"
-#include "pipe-loader/driinfo_gallium.h"
 #include "gallium/winsys/panfrost/drm/panfrost_drm_public.h"
 #include <string.h>
 
