@@ -129,6 +129,8 @@ cpp_args = ['-arch', 'arm64', '-isysroot', '$SDK', '-miphoneos-version-min=$IOS_
             ${SPIRV_TOOLS_PREFIX:+, '-I$SPIRV_TOOLS_PREFIX/include'}]
 c_link_args = ['-arch', 'arm64', '-isysroot', '$SDK', '-miphoneos-version-min=$IOS_MIN',
                '-L$OUT_DIR', '-ls21drm']
+cpp_link_args = ['-arch', 'arm64', '-isysroot', '$SDK', '-miphoneos-version-min=$IOS_MIN',
+                 '-L$OUT_DIR', '-ls21drm']
 
 [host_machine]
 system = 'darwin'
