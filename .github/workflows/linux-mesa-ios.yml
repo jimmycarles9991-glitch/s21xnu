@@ -19,6 +19,8 @@ jobs:
         run: |
           set -euo pipefail
           brew install llvm meson ninja spirv-llvm-translator spirv-tools
+          python3 -m pip install --break-system-packages --user \
+            mako packaging pyyaml
 
       - name: Build fresh Mesa 26.2.4 Panfrost iOS artifacts
         run: |
