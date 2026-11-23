@@ -71,7 +71,15 @@ def main() -> int:
 #ifdef S21_IOS
 #include "util/xmlconfig.h"
 #include "util/driconf.h"
+#include "pipe-loader/pipe_loader_priv.h"
 #include "gallium/winsys/panfrost/drm/panfrost_drm_public.h"
+
+static void
+s21_pipe_loader_release(struct pipe_loader_device **dev)
+{
+   free((*dev)->driver_name);
+   pipe_loader_base_release(dev);
+}
 #endif
 '''),
         ('''dri2_init_screen(struct dri_screen *screen, bool driver_name_is_inferred)
@@ -89,23 +97,42 @@ def main() -> int:
    screen->can_share_buffer = true;
 
 #ifdef S21_IOS
-   /* No libdrm pipe loader on iOS. Create the only compiled driver directly. */
+   /* No libdrm pipe loader on iOS. The DRI core still expects a
+    * pipe_loader_device for option caches and release, so provide a minimal
+    * one and create the only compiled driver directly.
+    */
    static const driOptionDescription s21_pan_options_desc[] = {
 #include "panfrost/driinfo_panfrost.h"
    };
-   static struct driOptionCache s21_pan_options_info = { 0 };
-   struct driOptionCache s21_pan_options = { 0 };
-   driParseOptionInfo(&s21_pan_options_info, s21_pan_options_desc,
+   static const struct pipe_loader_ops s21_pipe_loader_ops = {
+      .release = s21_pipe_loader_release,
+   };
+   struct pipe_loader_device *dev = CALLOC_STRUCT(pipe_loader_device);
+   if (!dev)
+      return NULL;
+   dev->type = PIPE_LOADER_DEVICE_PLATFORM;
+   dev->driver_name = strdup("panfrost");
+   if (!dev->driver_name) {
+      FREE(dev);
+      return NULL;
+   }
+   dev->ops = &s21_pipe_loader_ops;
+   driParseOptionInfo(&dev->option_info, s21_pan_options_desc,
                       sizeof(s21_pan_options_desc) /
                          sizeof(s21_pan_options_desc[0]));
-   driParseConfigFiles(&s21_pan_options, &s21_pan_options_info,
+   driParseConfigFiles(&dev->option_cache, &dev->option_info,
                        &(driConfigFileParseParams) { .driverName = "panfrost" });
+   screen->dev = dev;
    struct pipe_screen_config s21_config = {
       .driver_name_is_inferred = driver_name_is_inferred,
-      .options = &s21_pan_options,
-      .options_info = &s21_pan_options_info,
+      .options = &dev->option_cache,
+      .options_info = &dev->option_info,
    };
    pscreen = panfrost_drm_screen_create(screen->fd, &s21_config);
+   if (!pscreen) {
+      pipe_loader_release(&screen->dev, 1);
+      return NULL;
+   }
 #else
 #ifdef HAVE_LIBDRM
 '''),
