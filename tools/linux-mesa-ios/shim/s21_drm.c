@@ -15,6 +15,7 @@
 
 #include <errno.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -257,6 +258,7 @@ drmCommandWriteRead(int fd, unsigned int command, void *data, unsigned int size)
 /* Panfrost's kmod backend uses eventfd/timerfd only for optional perf sessions.
  * Those are never enabled here; the declarations let it compile and these
  * stubs let the dylib link. */
+#ifdef __APPLE__
 int
 eventfd(unsigned int initval, int flags)
 {
@@ -290,7 +292,8 @@ timerfd_create(int clockid, int flags)
 }
 
 int
-timerfd_settime(int fd, int flags, const void *new_value, void *old_value)
+timerfd_settime(int fd, int flags, const struct itimerspec *new_value,
+                struct itimerspec *old_value)
 {
    (void)fd; (void)flags; (void)new_value; (void)old_value;
    errno = ENOSYS;
@@ -298,12 +301,21 @@ timerfd_settime(int fd, int flags, const void *new_value, void *old_value)
 }
 
 int
-timerfd_gettime(int fd, void *curr_value)
+timerfd_gettime(int fd, struct itimerspec *curr_value)
 {
    (void)fd; (void)curr_value;
    errno = ENOSYS;
    return -1;
 }
+
+int
+sched_setscheduler(int pid, int policy, const struct sched_param *param)
+{
+   (void)pid; (void)policy; (void)param;
+   errno = ENOSYS;
+   return -1;
+}
+#endif /* __APPLE__ */
 
 /* iOS has no DRM device tree. These stubs only need to satisfy libloader's
  * symbol references; s21_drm_open() is the only device path used. */
