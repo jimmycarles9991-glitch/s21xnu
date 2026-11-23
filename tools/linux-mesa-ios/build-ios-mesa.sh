@@ -73,6 +73,15 @@ xcrun clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min="$IOS_MIN" \
    -Wl,-install_name,@rpath/libs21drm.dylib -o "$SHIM"
 codesign -f -s - "$SHIM"
 
+# Native (build-machine) shim: the native panfrost compiler links pan_kmod.c,
+# which includes our fake <xf86drm.h>. Only the host-test IOKit backend is needed.
+NATIVE_SHIM="$WORK_DIR/native-shim"
+mkdir -p "$NATIVE_SHIM"
+xcrun clang -sdk macosx -arch x86_64 -dynamiclib -DS21_HOST_TEST \
+   -I"$HERE/shim" -I"$HERE/include" -I"$MESA/include" \
+   "$HERE/shim/s21_drm.c" "$HERE/shim/s21_iokit_host.c" -pthread \
+   -o "$NATIVE_SHIM/libs21drm.dylib"
+
 # Mesa's CLC shader compiler tools must be built for the Mac (build machine)
 # and then reused with -Dmesa-clc=system; a cross build cannot link its native
 # vtn_bindgen2 against host libraries.
@@ -87,7 +96,9 @@ meson setup "$CLC_BUILD" "$MESA" \
    -Dprecomp-compiler=enabled -Dinstall-precomp-compiler=true \
    -Dzstd=disabled -Dxmlconfig=disabled -Dexpat=disabled \
    -Dvalgrind=disabled -Dlibunwind=disabled -Dvideo-codecs= -Dtools= \
-   -Dbuild-tests=false -Dgallium-va=disabled -Dlmsensors=disabled
+   -Dbuild-tests=false -Dgallium-va=disabled -Dlmsensors=disabled \
+   -Dc_args="-DS21_IOS -I$HERE/shim -I$HERE/include" \
+   -Dc_link_args="-L$NATIVE_SHIM -ls21drm -Wl,-rpath,$NATIVE_SHIM"
 ninja -C "$CLC_BUILD" \
    src/compiler/clc/mesa_clc src/compiler/spirv/vtn_bindgen2 \
    src/panfrost/clc/panfrost_compile
