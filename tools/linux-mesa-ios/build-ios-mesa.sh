@@ -157,7 +157,7 @@ ninja -C "$BUILD"
 
 # Copy and normalise install names so the bundle is relocatable on iOS.
 cp -v "$BUILD"/src/egl/libEGL*.dylib "$OUT_DIR/" 2>/dev/null || true
-cp -v "$BUILD"/src/mapi/es2api/libGLESv2*.dylib "$OUT_DIR/" 2>/dev/null || true
+cp -v "$BUILD"/src/mesa/glapi/es2api/libGLESv2*.dylib "$OUT_DIR/" 2>/dev/null || true
 cp -v "$BUILD"/src/gallium/targets/dri/libgallium*.dylib "$OUT_DIR/" 2>/dev/null || true
 
 install_name_fix() {
