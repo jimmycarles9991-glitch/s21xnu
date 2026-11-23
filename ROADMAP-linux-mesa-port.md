@@ -91,7 +91,8 @@ The kernel GPU driver and display handoff already exist in this tree.
       `/home/tom/Downloads/udp-sniff-20261123-210124.txt` shows every stage plus
       `S21GPU: clear PASS rgba=00ff00ff`. Selector 6 reported 1080x2400, stride 4320.
       A post-PASS paint-loop SIGSEGV was caused by a missing `& 0xffff` when decoding
-      the packed height; fixed in source, V6 rebuild pending.
+      the packed height; fixed in source and rebuilt as V6 (CI `45265919487`),
+      device push/boot pending.
 - [ ] Textured quad through Mesa Panfrost on the G78, keeping the full-screen
       PASS/FAIL panel paint as the visible result.
 - [ ] Present into an IOSurface-backed layer using the existing framebuffer path.
