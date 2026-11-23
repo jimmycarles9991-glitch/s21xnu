@@ -1,0 +1,31 @@
+name: linux-mesa-ios
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          set -euo pipefail
+          brew install llvm meson ninja spirv-llvm-translator spirv-tools
+
+      - name: Build fresh Mesa 26.2.4 Panfrost iOS artifacts
+        run: |
+          set -euo pipefail
+          OUT_DIR="$GITHUB_WORKSPACE/out/linux-mesa-ios" \
+            bash tools/linux-mesa-ios/build-ios-mesa.sh
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-mesa-g78
+          path: out/linux-mesa-ios/
+          if-no-files-found: error

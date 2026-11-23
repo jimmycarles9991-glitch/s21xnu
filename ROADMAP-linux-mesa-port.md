@@ -1,0 +1,128 @@
+# Roadmap: fresh Linux-Mesa-based GPU UI port (S21 / Mali-G78)
+
+Status: **active** (2026-11-23). This supersedes `ROADMAP-jesvi-gl-route.md` as the
+chosen route. It starts from the Linux port's *known-working* Mesa 26.2.4 stack on
+this exact phone, not from the deleted Mesa branch or from Jesvi's G77/Mesa 25.0.7
+tree. Everything under `tools/linux-mesa-ios/` is written fresh in this repository.
+
+## 0. Goal and decisions
+
+**Goal:** backboardd renders iOS UI through Mesa Panfrost on the Mali-G78, so the
+screen shows the Apple logo, SpringBoard and apps rather than only a progress bar.
+
+| Decision | Value | Evidence |
+|---|---|---|
+| Mesa version | **26.2.4** (upstream tag) | Linux port renders GLES 3.1 with `Mali-G78 MC14 (Panfrost)` / `OpenGL ES 3.1 Mesa 26.2.4`; `/home/tom/s21/S21_Exynos2100.md` §11.21+ |
+| G78 model row | downstream `PAN_PROD_ID(9,2,2)` | `/home/tom/s21/mesa-26.2.4/patch_mesa_g78.py`; upstream 26.2.4/26.2.5 have no G78 row |
+| GPU UAPI target | XNU `SweetMali` IOKit selectors in `xnu/patches/0112-s21-mali-iokit.sh` | selectors 0 GET_INFO, 1 CREATE_BO, 2 MAP_BO, 3 SUBMIT, 4 DESTROY_BO, 5 LOG, 6 MAPFB, 8 IMPORT_USER, 12/13 range flush |
+| iOS build in our image | **16.7.16 (20H392)** | `README.md`, image `iosroot-20H392-full.img` in `NOTES.md` |
+| Reuse policy | Linux port scripts/docs are the user's own work and may be adapted with credit; no code from the deleted Mesa tree; no Linux-kernel GPL code copied into iOS userland; Jesvi code stays a read-only reference for now | user decision 2026-11-23; Jesvi `LICENSE` is MIT for userland/tools, APSL for `xnu/files/` |
+| Why not the old plan | Jesvi's `inject.c` has dyld-cache addresses for iOS 16.5 (20F66); our image is 20H392. Its Mesa 25.0.7 also lacks a G78 model row. | `ROADMAP-jesvi-gl-route.md` Phase 0; direct tarball checks recorded in `LINUX_S21_GPU.md` |
+
+## 1. Target architecture
+
+```
+backboardd (CoreAnimation, GLES renderer)
+   -> fresh EAGL/GL glue (20H392 symbols must be discovered, not guessed)
+   -> libpanfrost_s21.dylib: Mesa 26.2.4 Panfrost + fresh libdrm shim
+   -> IOConnectCall* -> SweetMali user client (0112)
+   -> Mali-G78 job manager -> framebuffer/IOSurface present
+```
+
+The two new pieces are (a) the Mesa 26.2.4 iOS cross-build and (b) the drm shim.
+The kernel GPU driver and display handoff already exist in this tree.
+
+## 2. Phases
+
+### Phase 0 — evidence and decisions (mostly done)
+- [x] License decision above.
+- [x] iOS build identified as 20H392; 20F66 addresses rejected.
+- [x] GPU identity/params recorded below from the Linux port's register dump.
+- [x] Coherency requirement recorded: Linux only rendered reliably after
+      `dcache_clean_inval_poc()` on write-combined BO mappings. XNU's selector 3
+      flushes all mapped BOs before/after submit; selector 13 flushes explicit
+      ranges. The fresh shim must use 3 or 13/12, never assume a coherent GPU.
+- [ ] Repeatable test loop confirmed with the user (boot script + log pull + a way
+      to run one test binary without rebuilding the whole root image).
+
+### Phase 1 — fresh Mesa 26.2.4 iOS build (implementation done, CI pending)
+- [x] `tools/linux-mesa-ios/patch_mesa_g78.py`: fresh, idempotent G78 model-row patch.
+- [x] Darwin/fake-libdrm glue written fresh in `patch_mesa_ios.py`, applied twice
+      to pristine 26.2.4 with no failures: DRI enable on Darwin, direct
+      `panfrost_drm_screen_create()`, fake DRM fd loader, surfaceless probe,
+      cached BO maps.
+- [x] `.github/workflows/linux-mesa-ios.yml` and `build-ios-mesa.sh` write the
+      pinned tarball, check SHA-256, cross-build `libs21drm.dylib` + EGL/GLES +
+      `libgallium_dri.dylib` for arm64 iOS, codesign, and upload `ios-mesa-g78`.
+- [x] Host-side patch-apply check and fake-IOKit test pass before any device boot:
+      `patch_mesa_ios.py` + `patch_mesa_g78.py` idempotent; `s21-drm-host-test: PASS`.
+- [ ] Run `linux-mesa-ios` CI on macOS and fix any cross-build errors (needs user
+      approval before dispatch). Native Linux full build is blocked only by local
+      LLVM/LLVMSPIRVLib mismatch; CI installs matching Homebrew versions.
+
+### Phase 2 — fresh drm shim over SweetMali (done, device unverified)
+- [x] `GET_PARAM` mapping from the measured table below (including raw
+      `L2_FEATURES 0x07120206`, workgroup/barrier `0x200`).
+- [x] BO create/map/destroy with a client-side VA allocator; split the 128 MiB
+      tiler heap into <=15 MiB kernel BOs (kernel limit in 0112).
+- [x] Submit through selector 3 (with selector 12/13 range-flush support), syncobj
+      emulation, `IMPORT_USER` for IOSurface-backed memory.
+- [x] Fake-IOKit host test covering params, heap splitting, submit and flush calls.
+- [x] Shared `libs21drm.dylib` linked by both EGL and Panfrost so BO/syncobj state
+      is not duplicated across images.
+
+### Phase 3 — one-process GLES proof (test written, not run on device)
+- [x] `tools/linux-mesa-ios/test/s21_gpu_test.c`: surfaceless GLES3 clear/readback
+      with `S21GPU: ... PASS/FAIL` output, syntax-checked locally.
+- [ ] Clear+readback and textured quad through Mesa Panfrost on the G78, with a
+      full-screen PASS/FAIL colour on the panel so the result is visible without a shell.
+- [ ] Present into an IOSurface-backed layer using the existing framebuffer path.
+
+### Phase 4 — backboardd integration
+- [ ] Discover 20H392 CoreAnimation/EAGL symbols; no 20F66 address reuse.
+- [ ] Inject/replace the GL context in backboardd with Metal left off.
+- [ ] Verify logo, progress bar, SpringBoard and lock screen.
+
+### Phase 5 — stabilise
+- [ ] Async submit, GPU clocks/thermal, longer soak tests, renderer boot-arg.
+
+## 3. Measured GPU parameters (from `/home/tom/s21/S21_Exynos2100.md` §11.14/11.21)
+
+| Parameter | Value | Notes |
+|---|---|---|
+| GPU_ID | `0x92020010` | arch 9.2, product major 2 -> `PAN_PROD_ID(9,2,2)` |
+| SHADER_PRESENT | `0x00ee0cee` | 14 cores, non-contiguous; use the mask |
+| TILER_PRESENT / L2_PRESENT | `0x1` / `0x1` | |
+| AS_PRESENT / JS_PRESENT | `0xff` / `0x7` | 8 address spaces, 3 job slots |
+| L2_FEATURES | `0x07120206` | 64 B lines, 128-bit bus, 2^18 B/slice |
+| MEM_FEATURES | `0x301` | 4 L2 slices |
+| MMU_FEATURES | `0x2830` | 48-bit VA, 40-bit PA |
+| THREAD_FEATURES | `0x48000` | |
+| MAX_THREADS | `0x400` | |
+| MAX_WORKGROUP_SIZE | `0x200` | not 0x400 |
+| MAX_BARRIER_SIZE | `0x200` | not 0x400 |
+| TILER_FEATURES | `0x809` | 512-byte bins, 8 levels |
+| TEXTURE_FEATURES0-3 | `0xf7fe007e`, `0xc3fff7ff`, `0xbfe1ff9f`, `0x000010c6` | measured |
+
+Linux bring-up facts that must not be forgotten: G3D MMIO `0x18500000` size
+`0x5000`; GIC SPI 339/340/338 (job/mmu/gpu); bootloader leaves PMU/CMU powered;
+early TZ PD-restore SMC `0x82000410` was used; 400 MHz stub clock and dummy
+regulator were enough to render; no vendor DVFS/OPP needed for first light.
+
+## 4. Test checklist (every phase)
+
+1. Kernel log shows Mali up and no `OFF:`/fault lines after a frame.
+2. One solid clear with exact readback, then textured and blended quads.
+3. Full-screen colour result visible on the panel (no shell needed).
+4. Apple logo during the migration screen; then SpringBoard.
+5. 10-minute soak without GPU hang or panic.
+
+## 5. Risks
+
+| Risk | Mitigation |
+|---|---|
+| Mesa 26.2.4 iOS cross-build needs Darwin patches we must write fresh | start with host patch-apply checks, then CI |
+| Non-coherent memory | explicit selector 3/12/13 flushes; readback test |
+| 256 BO / 15 MiB per-BO / 512 MiB total kernel limits | split heap, log pool use |
+| 20H392 symbols unknown for backboardd injection | Phase 3 stays single-process until symbols are discovered |
+| G78 row values are G57-derived guesses | Linux already renders with them; revisit perf tuning only after first light |
