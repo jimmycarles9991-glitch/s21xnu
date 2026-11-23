@@ -87,7 +87,7 @@ meson setup "$CLC_BUILD" "$MESA" \
    -Dzstd=disabled -Dxmlconfig=disabled -Dexpat=disabled \
    -Dvalgrind=disabled -Dlibunwind=disabled -Dvideo-codecs= -Dtools= \
    -Dbuild-tests=false -Dgallium-va=disabled -Dlmsensors=disabled
-ninja -C "$CLC_BUILD" mesa_clc vtn_bindgen2
+ninja -C "$CLC_BUILD" src/compiler/clc/mesa_clc src/compiler/spirv/vtn_bindgen2
 
 export PATH="$CLC_BUILD/src/compiler/clc:$CLC_BUILD/src/compiler/spirv:$PATH"
 
