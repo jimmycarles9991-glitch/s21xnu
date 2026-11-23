@@ -1,4 +1,8 @@
-/* Single-process GLES clear/readback test for the fresh S21 Mesa port. */
+/* Single-process GLES proof for the fresh S21 Mesa port:
+ *  - surfaceless GLES3 clear + exact readback
+ *  - textured quad + alpha-blended texel, both read back
+ *  - visible full-screen PASS/FAIL painted on the real scanout
+ */
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES3/gl3.h>
@@ -10,6 +14,8 @@
 #include <unistd.h>
 
 #include "s21_iokit.h"
+
+#define TEST_SIZE 64
 
 static void
 say(const char *stage)
@@ -86,6 +92,74 @@ finish(const char *stage, int ok, unsigned char r, unsigned char g,
    return ok ? 0 : 1;
 }
 
+static int
+near(byte got, int want)
+{
+   return abs((int)got - want) <= 24;
+}
+
+static GLuint
+compile_shader(GLenum type, const char *src)
+{
+   GLuint sh = glCreateShader(type);
+   if (sh == 0)
+      return 0;
+   glShaderSource(sh, 1, &src, NULL);
+   glCompileShader(sh);
+   GLint ok = 0;
+   glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+   if (!ok) {
+      char log[200] = { 0 };
+      glGetShaderInfoLog(sh, sizeof(log) - 1, NULL, log);
+      char line[256];
+      snprintf(line, sizeof(line), "shader compile FAIL: %.160s", log);
+      say(line);
+      glDeleteShader(sh);
+      return 0;
+   }
+   return sh;
+}
+
+static GLuint
+build_program(void)
+{
+   static const char vs[] =
+      "attribute vec2 a_pos;\n"
+      "attribute vec2 a_uv;\n"
+      "varying vec2 v_uv;\n"
+      "void main() { v_uv = a_uv; gl_Position = vec4(a_pos, 0.0, 1.0); }\n";
+   static const char fs[] =
+      "precision mediump float;\n"
+      "varying vec2 v_uv;\n"
+      "uniform sampler2D u_tex;\n"
+      "void main() { gl_FragColor = texture2D(u_tex, v_uv); }\n";
+
+   GLuint v = compile_shader(GL_VERTEX_SHADER, vs);
+   GLuint f = compile_shader(GL_FRAGMENT_SHADER, fs);
+   if (v == 0 || f == 0)
+      return 0;
+   GLuint p = glCreateProgram();
+   if (p == 0)
+      return 0;
+   glAttachShader(p, v);
+   glAttachShader(p, f);
+   glLinkProgram(p);
+   GLint ok = 0;
+   glGetProgramiv(p, GL_LINK_STATUS, &ok);
+   if (!ok) {
+      char log[200] = { 0 };
+      glGetProgramInfoLog(p, sizeof(log) - 1, NULL, log);
+      char line[256];
+      snprintf(line, sizeof(line), "shader link FAIL: %.160s", log);
+      say(line);
+      glDeleteProgram(p);
+      p = 0;
+   }
+   glDeleteShader(v);
+   glDeleteShader(f);
+   return p;
+}
+
 int
 main(void)
 {
@@ -128,7 +202,9 @@ main(void)
       return finish("config", 0, 0, 0, 0, 0);
    say("config ok");
 
-   const EGLint pbuf_attr[] = { EGL_WIDTH, 16, EGL_HEIGHT, 16, EGL_NONE };
+   const EGLint pbuf_attr[] = {
+      EGL_WIDTH, TEST_SIZE, EGL_HEIGHT, TEST_SIZE, EGL_NONE
+   };
    EGLSurface surf = eglCreatePbufferSurface(dpy, cfg, pbuf_attr);
    const EGLint ctx_attr[] = { EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE };
    EGLContext ctx = eglCreateContext(dpy, cfg, EGL_NO_CONTEXT, ctx_attr);
@@ -137,7 +213,7 @@ main(void)
       return finish("context", 0, 0, 0, 0, 0);
    say("context ok");
 
-   glViewport(0, 0, 16, 16);
+   glViewport(0, 0, TEST_SIZE, TEST_SIZE);
    glClearColor(0.0f, 1.0f, 0.0f, 1.0f);
    glClear(GL_COLOR_BUFFER_BIT);
    say("clear submitted");
@@ -145,7 +221,85 @@ main(void)
    say("glFinish ok");
 
    unsigned char px[4] = { 0, 0, 0, 0 };
-   glReadPixels(8, 8, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
-   int ok = px[0] < 16 && px[1] > 240 && px[2] < 16 && px[3] > 240;
-   return finish("clear", ok, px[0], px[1], px[2], px[3]);
+   glReadPixels(TEST_SIZE / 2, TEST_SIZE / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+   int clear_ok = px[0] < 16 && px[1] > 240 && px[2] < 16 && px[3] > 240;
+   report("clear", clear_ok, px[0], px[1], px[2], px[3]);
+   if (!clear_ok)
+      return finish("clear+quad", 0, px[0], px[1], px[2], px[3]);
+
+   GLuint prog = build_program();
+   if (prog == 0)
+      return finish("quad-shader", 0, 0, 0, 0, 0);
+   say("shaders ok");
+
+   /* 2x2 nearest texture: opaque red/green on the bottom row, translucent
+    * white and opaque blue on the top row. */
+   static const unsigned char texel[16] = {
+      255, 0, 0, 255,      0, 255, 0, 255,
+      255, 255, 255, 128,  0, 0, 255, 255,
+   };
+   GLuint tex = 0;
+   glGenTextures(1, &tex);
+   glBindTexture(GL_TEXTURE_2D, tex);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+   glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 2, 2, 0, GL_RGBA,
+                GL_UNSIGNED_BYTE, texel);
+   say("texture uploaded");
+
+   static const GLfloat quad[] = {
+      -1.0f, -1.0f, 0.0f, 0.0f,
+       1.0f, -1.0f, 1.0f, 0.0f,
+      -1.0f,  1.0f, 0.0f, 1.0f,
+       1.0f,  1.0f, 1.0f, 1.0f,
+   };
+   GLuint vbo = 0;
+   glGenBuffers(1, &vbo);
+   glBindBuffer(GL_ARRAY_BUFFER, vbo);
+   glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
+
+   glUseProgram(prog);
+   GLint pos = glGetAttribLocation(prog, "a_pos");
+   GLint uv = glGetAttribLocation(prog, "a_uv");
+   GLint sampler = glGetUniformLocation(prog, "u_tex");
+   if (pos < 0 || uv < 0 || sampler < 0)
+      return finish("quad-locations", 0, 0, 0, 0, 0);
+   glUniform1i(sampler, 0);
+   glEnableVertexAttribArray(pos);
+   glVertexAttribPointer(pos, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat),
+                         (const void *)0);
+   glEnableVertexAttribArray(uv);
+   glVertexAttribPointer(uv, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(GLfloat),
+                         (const void *)(2 * sizeof(GLfloat)));
+
+   /* Blue background makes the translucent white texel visibly blended. */
+   glClearColor(0.0f, 0.0f, 1.0f, 1.0f);
+   glClear(GL_COLOR_BUFFER_BIT);
+   glEnable(GL_BLEND);
+   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+   glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+   say("quad submitted");
+   glFinish();
+   say("quad glFinish ok");
+
+   unsigned char tex_px[4] = { 0, 0, 0, 0 };
+   glReadPixels(TEST_SIZE / 4, TEST_SIZE / 4, 1, 1, GL_RGBA,
+                GL_UNSIGNED_BYTE, tex_px);
+   int tex_ok = near(tex_px[0], 255) && near(tex_px[1], 0) &&
+                near(tex_px[2], 0) && near(tex_px[3], 255);
+   report("textured quad", tex_ok, tex_px[0], tex_px[1], tex_px[2], tex_px[3]);
+
+   unsigned char blend_px[4] = { 0, 0, 0, 0 };
+   glReadPixels(TEST_SIZE / 4, 3 * TEST_SIZE / 4, 1, 1, GL_RGBA,
+                GL_UNSIGNED_BYTE, blend_px);
+   int blend_ok = near(blend_px[0], 128) && near(blend_px[1], 128) &&
+                  near(blend_px[2], 255) && near(blend_px[3], 191);
+   report("blended quad", blend_ok, blend_px[0], blend_px[1], blend_px[2],
+          blend_px[3]);
+
+   int ok = tex_ok && blend_ok;
+   return finish("clear+quad", ok, blend_px[0], blend_px[1], blend_px[2],
+                 blend_px[3]);
 }
