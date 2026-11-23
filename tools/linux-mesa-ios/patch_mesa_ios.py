@@ -72,7 +72,9 @@ def main() -> int:
 #include "util/xmlconfig.h"
 #include "util/driconf.h"
 #include "pipe-loader/pipe_loader_priv.h"
+#include "pipe-loader/driinfo_gallium.h"
 #include "gallium/winsys/panfrost/drm/panfrost_drm_public.h"
+#include <string.h>
 
 static void
 s21_pipe_loader_release(struct pipe_loader_device **dev)
@@ -99,11 +101,25 @@ s21_pipe_loader_release(struct pipe_loader_device **dev)
 #ifdef S21_IOS
    /* No libdrm pipe loader on iOS. The DRI core still expects a
     * pipe_loader_device for option caches and release, so provide a minimal
-    * one and create the only compiled driver directly.
+    * one and create the only compiled driver directly.  The option info must
+    * include both the common Gallium options (queried by
+    * u_driconf_fill_st_options) and the Panfrost driver options, matching
+    * what pipe_loader_load_options() does in the normal path.
     */
+   static const driOptionDescription s21_gallium_options_desc[] = {
+#include "pipe-loader/driinfo_gallium.h"
+   };
    static const driOptionDescription s21_pan_options_desc[] = {
 #include "panfrost/driinfo_panfrost.h"
    };
+   driOptionDescription s21_options_desc[
+      sizeof(s21_gallium_options_desc) / sizeof(s21_gallium_options_desc[0]) +
+      sizeof(s21_pan_options_desc) / sizeof(s21_pan_options_desc[0])];
+   memcpy(s21_options_desc, s21_gallium_options_desc,
+          sizeof(s21_gallium_options_desc));
+   memcpy(&s21_options_desc[sizeof(s21_gallium_options_desc) /
+                            sizeof(s21_gallium_options_desc[0])],
+          s21_pan_options_desc, sizeof(s21_pan_options_desc));
    static const struct pipe_loader_ops s21_pipe_loader_ops = {
       .release = s21_pipe_loader_release,
    };
@@ -117,9 +133,8 @@ s21_pipe_loader_release(struct pipe_loader_device **dev)
       return NULL;
    }
    dev->ops = &s21_pipe_loader_ops;
-   driParseOptionInfo(&dev->option_info, s21_pan_options_desc,
-                      sizeof(s21_pan_options_desc) /
-                         sizeof(s21_pan_options_desc[0]));
+   driParseOptionInfo(&dev->option_info, s21_options_desc,
+                      sizeof(s21_options_desc) / sizeof(s21_options_desc[0]));
    driParseConfigFiles(&dev->option_cache, &dev->option_info,
                        &(driConfigFileParseParams) { .driverName = "panfrost" });
    screen->dev = dev;
