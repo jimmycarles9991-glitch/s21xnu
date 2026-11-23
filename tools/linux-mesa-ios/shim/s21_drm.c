@@ -911,6 +911,15 @@ drmSyncobjImportSyncFile(int fd, int sync_file_fd, uint32_t handle)
 }
 
 int
+drmSyncobjFDToHandle(int fd, int sync_file_fd, uint32_t *handle)
+{
+   int f = dup(sync_file_fd);
+   if (f >= 0)
+      close(f);
+   return drmSyncobjCreate(fd, 0, handle);
+}
+
+int
 drmSyncobjQuery2(int fd, uint32_t *handles, uint32_t count,
                  uint64_t *points, uint32_t flags)
 {

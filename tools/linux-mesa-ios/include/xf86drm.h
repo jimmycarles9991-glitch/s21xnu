@@ -134,6 +134,7 @@ int drmSyncobjTransfer(int fd, uint32_t dst_handle, uint64_t dst_point,
                        uint32_t src_handle, uint64_t src_point, uint32_t flags);
 int drmSyncobjExportSyncFile(int fd, uint32_t handle, int *sync_file_fd);
 int drmSyncobjImportSyncFile(int fd, int sync_file_fd, uint32_t handle);
+int drmSyncobjFDToHandle(int fd, int sync_file_fd, uint32_t *handle);
 int drmSyncobjQuery2(int fd, uint32_t *handles, uint32_t handle_count,
                      uint64_t *points, uint32_t flags);
 
