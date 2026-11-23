@@ -45,7 +45,7 @@ The kernel GPU driver and display handoff already exist in this tree.
 - [ ] Repeatable test loop confirmed with the user (boot script + log pull + a way
       to run one test binary without rebuilding the whole root image).
 
-### Phase 1 — fresh Mesa 26.2.4 iOS build (implementation done, CI pending)
+### Phase 1 — fresh Mesa 26.2.4 iOS build (CI green)
 - [x] `tools/linux-mesa-ios/patch_mesa_g78.py`: fresh, idempotent G78 model-row patch.
 - [x] Darwin/fake-libdrm glue written fresh in `patch_mesa_ios.py`, applied twice
       to pristine 26.2.4 with no failures: DRI enable on Darwin, direct
@@ -53,12 +53,18 @@ The kernel GPU driver and display handoff already exist in this tree.
       cached BO maps.
 - [x] `.github/workflows/linux-mesa-ios.yml` and `build-ios-mesa.sh` write the
       pinned tarball, check SHA-256, cross-build `libs21drm.dylib` + EGL/GLES +
-      `libgallium_dri.dylib` for arm64 iOS, codesign, and upload `ios-mesa-g78`.
+      `libgallium-26.2.4.dylib` for arm64 iOS, codesign, and upload `ios-mesa-g78`.
 - [x] Host-side patch-apply check and fake-IOKit test pass before any device boot:
       `patch_mesa_ios.py` + `patch_mesa_g78.py` idempotent; `s21-drm-host-test: PASS`.
-- [ ] Run `linux-mesa-ios` CI on macOS and fix any cross-build errors (needs user
-      approval before dispatch). Native Linux full build is blocked only by local
-      LLVM/LLVMSPIRVLib mismatch; CI installs matching Homebrew versions.
+- [x] macOS CI run **`45191168840`** at implementation head `12c44d8f` completed
+      **success**. Artifact `ios-mesa-g78` id `14827231974` contains arm64
+      `libs21drm.dylib`, EGL/GLES dylibs, `libgallium-26.2.4.dylib` and
+      `s21-gpu-test`, with `@rpath` dependencies that keep one shared shim.
+      The temporary `push` trigger was restored to `workflow_dispatch` only.
+      Failed iterations and fixes: `45176526852`/`45178636303` (`drmSyncobjFDToHandle`,
+      include paths), `45180829476`/`45182449137` (driconf macros),
+      `45184666904`/`45184836741` (host LLVM/SPIRV-Tools removed from target),
+      `45186829240` (arm64 `cpp_link_args`), `45189306716` (renderonly stubs).
 
 ### Phase 2 — fresh drm shim over SweetMali (done, device unverified)
 - [x] `GET_PARAM` mapping from the measured table below (including raw
@@ -71,9 +77,10 @@ The kernel GPU driver and display handoff already exist in this tree.
 - [x] Shared `libs21drm.dylib` linked by both EGL and Panfrost so BO/syncobj state
       is not duplicated across images.
 
-### Phase 3 — one-process GLES proof (test written, not run on device)
+### Phase 3 — one-process GLES proof (binary built, not run on device)
 - [x] `tools/linux-mesa-ios/test/s21_gpu_test.c`: surfaceless GLES3 clear/readback
-      with `S21GPU: ... PASS/FAIL` output, syntax-checked locally.
+      with `S21GPU: ... PASS/FAIL` output; the signed arm64 binary is in the
+      `ios-mesa-g78` artifact and links only the shipped `@rpath` dylibs.
 - [ ] Clear+readback and textured quad through Mesa Panfrost on the G78, with a
       full-screen PASS/FAIL colour on the panel so the result is visible without a shell.
 - [ ] Present into an IOSurface-backed layer using the existing framebuffer path.
