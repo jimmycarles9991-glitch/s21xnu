@@ -2,6 +2,9 @@ name: linux-mesa-ios
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - testing-mesa-port
 
 permissions:
   contents: read
