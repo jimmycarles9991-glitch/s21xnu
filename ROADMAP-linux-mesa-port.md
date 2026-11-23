@@ -42,8 +42,9 @@ The kernel GPU driver and display handoff already exist in this tree.
       `dcache_clean_inval_poc()` on write-combined BO mappings. XNU's selector 3
       flushes all mapped BOs before/after submit; selector 13 flushes explicit
       ranges. The fresh shim must use 3 or 13/12, never assume a coherent GPU.
-- [ ] Repeatable test loop confirmed with the user (boot script + log pull + a way
-      to run one test binary without rebuilding the whole root image).
+- [x] Repeatable test loop confirmed with the user: `boot-hojun-gpu.sh` +
+      `sweet-usbnet-sniff.sh` + one codesigned `s21-gpu-test` launched from the
+      cached launchd job, no root-image rebuild per test.
 
 ### Phase 1 — fresh Mesa 26.2.4 iOS build (CI green)
 - [x] `tools/linux-mesa-ios/patch_mesa_g78.py`: fresh, idempotent G78 model-row patch.
@@ -66,7 +67,7 @@ The kernel GPU driver and display handoff already exist in this tree.
       `45184666904`/`45184836741` (host LLVM/SPIRV-Tools removed from target),
       `45186829240` (arm64 `cpp_link_args`), `45189306716` (renderonly stubs).
 
-### Phase 2 — fresh drm shim over SweetMali (done, device unverified)
+### Phase 2 — fresh drm shim over SweetMali (done, device-verified by V5 clear PASS)
 - [x] `GET_PARAM` mapping from the measured table below (including raw
       `L2_FEATURES 0x07120206`, workgroup/barrier `0x200`).
 - [x] BO create/map/destroy with a client-side VA allocator; split the 128 MiB
@@ -77,7 +78,7 @@ The kernel GPU driver and display handoff already exist in this tree.
 - [x] Shared `libs21drm.dylib` linked by both EGL and Panfrost so BO/syncobj state
       is not duplicated across images.
 
-### Phase 3 — one-process GLES proof (binary built, not run on device)
+### Phase 3 — one-process GLES proof (clear PASS on device)
 - [x] `tools/linux-mesa-ios/test/s21_gpu_test.c`: surfaceless GLES3 clear/readback
       with `S21GPU: ... PASS/FAIL` output; the signed arm64 binary is in the
       `ios-mesa-g78` artifact and links only the shipped `@rpath` dylibs.
