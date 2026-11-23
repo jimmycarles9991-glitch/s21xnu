@@ -930,3 +930,21 @@ drmSyncobjQuery2(int fd, uint32_t *handles, uint32_t count,
    (void)flags;
    return -ENOTSUP;
 }
+
+/* Panfrost resource code references these helpers even though the iOS target
+ * creates its screen directly and never uses a renderonly/KMS screen. */
+void *
+renderonly_create_gpu_import_for_resource(void *rsc, void *ro, void *handle)
+{
+   (void)rsc;
+   (void)ro;
+   (void)handle;
+   return NULL;
+}
+
+void
+renderonly_scanout_destroy(void *scanout, void *ro)
+{
+   (void)scanout;
+   (void)ro;
+}
