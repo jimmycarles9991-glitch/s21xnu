@@ -77,7 +77,7 @@ codesign -f -s - "$SHIM"
 # which includes our fake <xf86drm.h>. Only the host-test IOKit backend is needed.
 NATIVE_SHIM="$WORK_DIR/native-shim"
 mkdir -p "$NATIVE_SHIM"
-xcrun clang -sdk macosx -arch x86_64 -dynamiclib -DS21_HOST_TEST \
+xcrun -sdk macosx clang -arch x86_64 -dynamiclib -DS21_HOST_TEST \
    -I"$HERE/shim" -I"$HERE/include" -I"$MESA/include" \
    "$HERE/shim/s21_drm.c" "$HERE/shim/s21_iokit_host.c" -pthread \
    -o "$NATIVE_SHIM/libs21drm.dylib"
