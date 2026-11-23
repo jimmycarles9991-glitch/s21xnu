@@ -81,15 +81,18 @@ rm -rf "$CLC_BUILD"
 meson setup "$CLC_BUILD" "$MESA" \
    --wrap-mode=nofallback --buildtype=release \
    -Dprefix="$WORK_DIR/clc-prefix" -Dlibdir=lib \
-   -Dgallium-drivers= -Dvulkan-drivers= -Dplatforms= \
+   -Dgallium-drivers=panfrost -Dvulkan-drivers= -Dplatforms= \
    -Dglx=disabled -Dgles1=disabled -Dgles2=disabled -Degl=disabled -Dgbm=disabled \
    -Dglvnd=disabled -Dllvm=enabled -Dmesa-clc=enabled -Dinstall-mesa-clc=true \
+   -Dprecomp-compiler=enabled -Dinstall-precomp-compiler=true \
    -Dzstd=disabled -Dxmlconfig=disabled -Dexpat=disabled \
    -Dvalgrind=disabled -Dlibunwind=disabled -Dvideo-codecs= -Dtools= \
    -Dbuild-tests=false -Dgallium-va=disabled -Dlmsensors=disabled
-ninja -C "$CLC_BUILD" src/compiler/clc/mesa_clc src/compiler/spirv/vtn_bindgen2
+ninja -C "$CLC_BUILD" \
+   src/compiler/clc/mesa_clc src/compiler/spirv/vtn_bindgen2 \
+   src/panfrost/clc/panfrost_compile
 
-export PATH="$CLC_BUILD/src/compiler/clc:$CLC_BUILD/src/compiler/spirv:$PATH"
+export PATH="$CLC_BUILD/src/compiler/clc:$CLC_BUILD/src/compiler/spirv:$CLC_BUILD/src/panfrost/clc:$PATH"
 
 CROSS="$WORK_DIR/ios-arm64.cross"
 cat > "$CROSS" <<EOF
@@ -126,7 +129,7 @@ meson setup "$BUILD" "$MESA" --cross-file "$CROSS" \
    -Dprefix=/usr/local/s21-mesa -Dlibdir=lib \
    -Dgallium-drivers=panfrost -Dvulkan-drivers= -Dplatforms= \
    -Dglx=disabled -Dgles1=disabled -Dgles2=enabled -Degl=enabled -Dgbm=disabled \
-   -Dglvnd=disabled -Dllvm=enabled -Dmesa-clc=system -Dpanfrost-rust=false \
+   -Dglvnd=disabled -Dllvm=enabled -Dmesa-clc=system -Dprecomp-compiler=system -Dpanfrost-rust=false \
    -Dzstd=disabled -Dxmlconfig=disabled -Dexpat=disabled \
    -Dshader-cache=enabled -Dshader-cache-default=false -Dvalgrind=disabled \
    -Dlibunwind=disabled -Dvideo-codecs= -Dtools= -Dbuild-tests=false \
