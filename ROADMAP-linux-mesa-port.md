@@ -85,11 +85,14 @@ The kernel GPU driver and display handoff already exist in this tree.
       SHA-256 `90a9a1223cf2036c1dfbe6972cda41f96e84e5ecc086e9a897121b7e9043de0d`,
       root:root 644, matches the host image byte-for-byte. `com.s21.gputest` is in
       the cached launchd bootstrap; `com.s21.glclear` was removed.
-- [ ] Clear+readback and textured quad through Mesa Panfrost on the G78, with a
-      full-screen PASS/FAIL colour on the panel so the result is visible without a shell.
-      The test source now logs every stage through SweetMali selector 5 (`sweet_mali:
-      user: S21GPU: ...`) and paints the real scanout via selector 6 (green PASS,
-      red FAIL, repainted every 50 ms); this is pending a CI rebuild and device proof.
+- [x] Clear+readback through Mesa Panfrost on the G78, with a full-screen PASS
+      colour on the panel: user observed full-screen green on 2026-11-23 and log
+      `/home/tom/Downloads/udp-sniff-20261123-210124.txt` shows every stage plus
+      `S21GPU: clear PASS rgba=00ff00ff`. Selector 6 reported 1080x2400, stride 4320.
+      A post-PASS paint-loop SIGSEGV was caused by a missing `& 0xffff` when decoding
+      the packed height; fixed in source, V6 rebuild pending.
+- [ ] Textured quad through Mesa Panfrost on the G78, keeping the full-screen
+      PASS/FAIL panel paint as the visible result.
 - [ ] Present into an IOSurface-backed layer using the existing framebuffer path.
 
 ### Phase 4 — backboardd integration

@@ -59,7 +59,7 @@ paint_fb(uint32_t colour)
    }
    uint32_t stride = (uint32_t)out[2];
    uint32_t width = (uint32_t)(out[3] >> 16);
-   uint32_t height = (uint32_t)out[3];
+   uint32_t height = (uint32_t)(out[3] & 0xffff);
    char line[256];
    snprintf(line, sizeof(line),
             "framebuffer %ux%u stride %u handle %u colour %08x",
