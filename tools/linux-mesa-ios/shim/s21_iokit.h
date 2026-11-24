@@ -53,6 +53,7 @@ uint32_t s21_host_last_slot(void);
 uint64_t s21_host_last_jc(void);
 uint32_t s21_host_live_bos(void);
 uint32_t s21_host_last_map_va(void);
+void s21_host_fail_map(unsigned count);   /* fail the next count MAP_BO calls */
 #endif
 
 #ifdef __cplusplus

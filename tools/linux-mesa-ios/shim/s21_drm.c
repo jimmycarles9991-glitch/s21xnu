@@ -507,6 +507,23 @@ drmIoctlImpl(int fd, unsigned long request, void *arg)
          uint64_t m[2] = { out[0], va + (uint64_t)i * S21_CHUNK_MAX };
          e = s21_iokit_scalar(S21_MAP_BO, m, 2, NULL, NULL);
          if (e) {
+            /* This BO already exists in the kernel. Leaving it in our slot
+             * table leaks a handle (V19: 588 CREATE_BO failures and a
+             * backboardd respring after the GPU page-table pool filled). */
+            {
+               char line[160];
+               snprintf(line, sizeof(line),
+                        "S21DRM: map failed h=%u size=%llx chunk=%u of %u err=%d; rolling back",
+                        slot + 1, (unsigned long long)size, i + 1, nk, -e);
+               s21_iokit_log(line);
+            }
+            for (uint32_t j = 0; j < b->nk; j++) {
+               uint64_t d[1] = { b->k[j] }, o[1] = { 0 };
+               uint32_t dn = 1;
+               (void)s21_iokit_scalar(S21_DESTROY_BO, d, 1, o, &dn);
+            }
+            memset(b, 0, sizeof(*b));
+            va_free_locked(va, size);
             pthread_mutex_unlock(&C.lock);
             return e;
          }

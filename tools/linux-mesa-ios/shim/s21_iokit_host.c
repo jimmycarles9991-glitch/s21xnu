@@ -23,6 +23,7 @@ static struct {
    uint32_t last_slot;
    uint64_t last_jc;
    uint32_t last_map_va;
+   unsigned fail_map;
 } H;
 
 void
@@ -49,6 +50,7 @@ uint32_t s21_host_live_bos(void)
    return n;
 }
 uint32_t s21_host_last_map_va(void) { return H.last_map_va; }
+void s21_host_fail_map(unsigned count) { H.fail_map = count; }
 
 int
 s21_iokit_open(void)
@@ -121,6 +123,10 @@ s21_iokit_scalar(uint32_t selector, const uint64_t *in, uint32_t in_count,
       if (in_count < 2 || in[0] < 1 || in[0] > HOST_MAX_BOS ||
           !H.bo[in[0] - 1].used || (in[1] & 0xfff))
          return -EINVAL;
+      if (H.fail_map) {
+         H.fail_map--;
+         return -ENOMEM;
+      }
       H.bo[in[0] - 1].va = in[1];
       H.last_map_va = (uint32_t)in[1];
       return 0;

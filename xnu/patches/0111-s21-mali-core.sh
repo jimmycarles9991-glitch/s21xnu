@@ -240,6 +240,15 @@ pool_alloc(void)
 	} else if (mali.pool_next < mali.pool_pages) {
 		i = mali.pool_next++;
 	} else {
+		/* V19 hit the 512-page scratch window after 128 distinct L3 leaf
+		 * tables; a silent zero became MAP_BO's kIOReturnNoMemory. Log the
+		 * first failure and then every 64th so a boot is still diagnostic. */
+		static uint32_t pool_fail;
+		if ((pool_fail++ & 63U) == 0U) {
+			mali_log("pool exhausted: used=%u of %u free=%u",
+			    (uint32_t)mali.pool_next, (uint32_t)mali.pool_pages,
+			    (uint32_t)pool_nfree);
+		}
 		return 0;
 	}
 	volatile uint32_t *p = (volatile uint32_t *)(mali.pool_va + ((vm_offset_t)i << 12));
@@ -262,6 +271,19 @@ static volatile uint32_t *
 pa2va(uint64_t pa)
 {
 	return (volatile uint32_t *)(mali.pool_va + (vm_offset_t)(pa - mali.pool_pa));
+}
+
+/* A page-table page is 512 LPAE entries, stored as two 32-bit words each. */
+static int
+table_empty(uint64_t table_pa)
+{
+	volatile uint32_t *t = pa2va(table_pa);
+	for (uint32_t i = 0; i < 1024; i++) {
+		if (t[i]) {
+			return 0;
+		}
+	}
+	return 1;
 }
 
 /* ---- GPU contexts: one 4-level LPAE page table per address space ---- */
@@ -1477,22 +1499,35 @@ sweet_mali_ctx_unmap(int id, uint64_t va)
 	if (id < 0 || id >= MALI_MAX_CTX || !ctx_used[id]) {
 		return;
 	}
-	(void)ctx_map; /* leaf entry is rewritten to 0 by walking the existing tables */
 	mali_pt_gen++;
-	uint64_t t = ctxs[id].pgd_pa;
+	uint64_t tab[4];
 	uint32_t idx[3] = { (uint32_t)((va >> 39) & 0x1FF), (uint32_t)((va >> 30) & 0x1FF), (uint32_t)((va >> 21) & 0x1FF) };
+	tab[0] = ctxs[id].pgd_pa;
 	for (int l = 0; l < 3; l++) {
-		volatile uint32_t *tb = pa2va(t);
+		volatile uint32_t *tb = pa2va(tab[l]);
 		uint64_t e = (uint64_t)tb[idx[l] * 2] | ((uint64_t)tb[idx[l] * 2 + 1] << 32);
 		if (!(e & 1ULL)) {
 			return;
 		}
-		t = e & 0x0000FFFFFFFFF000ULL;
+		tab[l + 1] = e & 0x0000FFFFFFFFF000ULL;
 	}
-	volatile uint32_t *leaf = pa2va(t);
+	volatile uint32_t *leaf = pa2va(tab[3]);
 	uint32_t li = (uint32_t)((va >> 12) & 0x1FF);
 	leaf[li * 2] = 0;
 	leaf[li * 2 + 1] = 0;
+
+	/* V19 leaked L3 leaf tables until a 512-page pool held 163 of them and
+	 * MAP_BO began failing. Reclaim a table as soon as its last PTE is gone;
+	 * mali_pt_gen forces the next submit to flush the stale GPU TLB. */
+	for (int l = 2; l >= 0; l--) {
+		if (!table_empty(tab[l + 1])) {
+			break;
+		}
+		pool_free_pa(tab[l + 1]);
+		volatile uint32_t *parent = pa2va(tab[l]);
+		parent[idx[l] * 2] = 0;
+		parent[idx[l] * 2 + 1] = 0;
+	}
 }
 
 /* activate the context, flush its TLB, run one job chain; 0 = done, else the JS_STATUS code */

@@ -871,6 +871,15 @@ SweetMaliUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
 			IOByteCount len = 0;
 			addr64_t pa = b->md->getPhysicalSegment((IOByteCount)k << 12, &len, kIOMemoryMapperNone);
 			if (pa == 0 || sweet_mali_ctx_map(fCtx, va + ((uint64_t)k << 12), pa)) {
+				/* V19: a full GPU page-table pool made this kIOReturnNoMemory,
+				 * but nothing said why. Undo the pages already mapped in this
+				 * call (with the new leaf reclaim) and make the log explicit. */
+				sm_log("bo map failed h=%llu va=%llx pages=%llu mapped=%u ctx=%llu pa=%llx",
+				    (uint64_t)h, va, (uint64_t)b->pages, (unsigned)k,
+				    (uint64_t)(int64_t)fCtx, (uint64_t)pa);
+				for (uint32_t j = 0; j < k; j++) {
+					sweet_mali_ctx_unmap(fCtx, va + ((uint64_t)j << 12));
+				}
 				ret = kIOReturnNoMemory;
 				break;
 			}

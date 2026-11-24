@@ -139,6 +139,26 @@ test_va_table_growth(int fd)
 }
 
 static void
+test_map_failure_rollback(int fd)
+{
+   /* V19 leaked a shim slot whenever the kernel's GPU page-table pool made
+    * MAP_BO fail. The next CREATE_BO then had no slot and Mesa logged err=5. */
+   struct drm_panfrost_create_bo c = { .size = 0x4000, .flags = 0 };
+
+   s21_host_fail_map(1);
+   errno = 0;
+   assert(drmIoctl(fd, DRM_IOCTL_PANFROST_CREATE_BO, &c) == -ENOMEM);
+   assert(errno == ENOMEM);
+   assert(s21_host_live_bos() == 0);
+
+   s21_host_fail_map(0);
+   uint32_t h = create_bo(fd, 0x4000, 0, NULL);
+   assert(s21_host_live_bos() == 1);
+   assert(drmCloseBufferHandle(fd, h) == 0);
+   assert(s21_host_live_bos() == 0);
+}
+
+static void
 test_heap_split(int fd)
 {
    uint64_t va = 0;
@@ -223,6 +243,7 @@ main(void)
    test_small_bo_submit_and_map(fd);
    test_small_bo_16k_alignment(fd);
    test_va_table_growth(fd);
+   test_map_failure_rollback(fd);
    test_heap_split(fd);
    test_syncobjs(fd);
    test_syncobj_import_v17(fd);
