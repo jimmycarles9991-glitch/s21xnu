@@ -28,12 +28,13 @@ Fresh concise handoff, 2026-11-24. The old ~450 KB chronology was removed from t
 - Keep untracked `s20/` as a read-only reference. Do not commit it. Do not copy `ca_hooks.c`.
 - User prefers one combined script/attempt instead of several separate boots.
 
-## Current state: V20 source ready, both CI runs pending
+## Current state: V20 boot analysed, V21 diagnostics next
 
-- Branch: `testing-mesa-port`; clean except untracked `s20/`. Check `git log -1` for the current notes-only head.
+- Branch: `testing-mesa-port`; clean except untracked `s20/`. Head `48baee7` (notes) after V20 deployment.
 - V20 source commit: `dda812d` (`gpu ios: V20 pool reclaim and MAP_BO rollback`).
-- Notes-only commits after source: `6b90a11`, `9fe118f`, `880aea5` (compacted handoff from 1044 to 161 lines).
-- No V20 image, push, swap or boot has happened. No V20 artifacts downloaded yet.
+- V20 was fully deployed and the user booted it. Result: no win — still slow, SpringBoard respring continued, some icons still pinky.
+- V20 log: `/home/tom/Downloads/udp-sniff-20261124-215027.txt` (69,846 lines).
+- Next work is V21 failure-reason diagnostics, not another colour guess. No V21 device push/swap/boot is approved yet.
 
 ### V20 changes
 
@@ -84,27 +85,41 @@ Fresh concise handoff, 2026-11-24. The old ~450 KB chronology was removed from t
 - Device swap removed active V19 (host copy retained), ran F2FS GC, then wrote sequentially with `dd bs=64M conv=fsync` in 190.609 s at 90.1 MB/s. Final active root verified: SHA-256 `bd34f2f4…15e48f`, `root:root 644`, `extents=3272`, `free_segments=10564`, tunables `2048`/`0`, 31G free. Printed `ACTIVE_V20_READY`.
 - No boot/kexec/flash/partition change by assistant. Device is still in Arch Linux.
 
+### V20 boot result (user report + log analysis)
+
+- User: “still jst as slow, and spring rebooted still. also some icons render fine and some are pinky like and shit.”
+- GPU gate PASS: clear `706`, textured quad `773`, blended quad `803`. EAGL injection: pid 58 line `424`, pid 385 line `28160`, pid 465 line `58681`; 8/8 EAGL methods replaced.
+- V20’s specific failure paths did **not** fire: `pool exhausted` 0, `bo map failed` 0, `S21DRM: map failed … rolling back` 0. Do not claim the V19 page-table/MAP_BO root cause was observed in V20.
+- Persistent failures: `CREATE_BO failed (err=5)` 183, `export failed` 98, `panfrost_batch_init failed` 55, `0x505` 30, `0x506` 0, `0 drawn in place` 130.
+- `err=5` remains generic. `s21_iokit_scalar()` maps every IOKit failure to `-EIO`, and the shim returns `-EIO` for a failed create or bad output. At the first failure, reconstructed shim state was 248 live slots, 247 MiB/512 MiB total, 8 free slots and a 142 MiB largest VA hole, so the obvious shim `C.total`/slot/VA early returns do not explain it. The kernel `kSMCreateBO` failure paths log nothing; kernel slot/total/MD failures are still indistinguishable. Imports also consume kernel `fBo`/`sm_total` without a `bo create` log, so log reconstruction alone cannot settle it.
+- Crash is downstream of BO failure. Symbolicated:
+  - `libgallium-26.2.4.dylib+0x6f0868` = `_panfrost_ptr_map+0x300`; it dereferences a NULL returned by `panfrost_resource_create_with_modifier()` in `pan_resource_modifier_convert()` (`pan_resource.c:1837-1841`).
+  - Caller chain: `libs21eagl.dylib+0x5defc` `_target_to_surface+0x638` ← `+0x5d498` `_frame_end+0x4e8` ← `+0x2a668` `_my_glFinishObjectAPPLE+0xe8`.
+  - So failed BO creation during copy-out leads directly to the NULL deref/respring; it is not an independent EAGL crash.
+- Respring timeline: backboardd pid 58 SIGSEGV line `27607`, SpringBoard SIGKILL/respawn `28202`; pid 385 SIGSEGV `58381`, SpringBoard SIGKILL `58717`. pid 465 launched `58681` and was still submitting at the end of the log (no later crash marker).
+- Speed (88 full `|backboardd| hakios-gl: frame` summaries, frames 1–40 across three launches): mean 1.52 s/frame, median 1.09 s, range 0.17–5.29 s. Copy-out mean 339 ms (39% of frame time); IOSurface pre-time mean 242 ms, max 2.08 s. No zero-copy (`0 drawn in place` 130). Per-launch means: 1.37 s, 1.62 s, 1.73 s.
+- Presents happened: 16 `SWEET FB: swap`, 2795 `submit result`; colour/icons remain unresolved.
+
 ### Next move
 
-1. User runs sniffer first, then boots once with the V20 kernel file and the exact args above.
-2. Assistant analyses the new UDP log for `pool exhausted`, `bo map failed`, `CREATE_BO failed`, `export failed`, respring, frame timings, EAGL markers, icons and wallpaper.
-3. If stable but colours remain wrong, do a focused icon/wallpaper swizzle/plane-order attempt. Smoothness still needs zero-copy/GPU blit later.
+1. Add V21 diagnostics that log the exact `CREATE_BO` rejection path before returning: requested/aligned size, `C.total`, live shim slots, `nva`, `nk`, `va_alloc` result, and which early return fired. Also log kernel `kSMCreateBO`/`kSMImportUser` rejection reasons with `sm_total` and free-slot count.
+2. Add host-test coverage for the diagnostic paths and run local checks.
+3. Push source/CI only after the V21 patch is reviewed; ask explicitly before any image build/push/swap/boot.
+4. After BO failures are identified and fixed, do a focused icon/wallpaper swizzle/plane-order attempt, then zero-copy/GPU blit for smoothness.
 
-Expected good V20 signs: `pool exhausted` and `bo map failed` may appear, but `CREATE_BO failed (err=5)` should collapse, no `EXC_CORPSE_NOTIFY`/respring, EAGL markers still present, UI still renders.
-
-## Active device state (V20 root staged, V20 kernel ready to boot)
+## Active device state (V20 root and kernel booted by user)
 
 - Active root image: `/mnt/android-data/linux/iosroot.img` on device.
 - SHA-256: `bd34f2f44e5cb9f574a162764ec80ff93d925f40a854011c6c3043525d61e48f`.
 - Size: `17,179,869,184` B; mode/owner `644 root:root`; `extents=3272` (≤8192 boot cap).
 - Host copy: `/home/tom/ios-sweet/build/iosroot-hojun-816f870-eagl-v20.img`, same SHA-256.
 - Kernel file for the next boot: `/home/tom/Downloads/kernel-v20/kernel.development.sweet`, SHA-256 `8aed3bbc61ffdf095f24e4ba3bc7bc31358472a6479172aa6d8bf8ebc53382fa`.
-- Last booted kernel remained V17 (`a98e0383…a872b`) until the user boots V20; no kernel has been flashed.
+- Last booted kernel is the V20 file above (`8aed3bbc…82fa`), supplied to the user's temporary `fastboot boot`; no kernel has been flashed.
 - Device V19 root was deleted during the V20 swap; host V19 and V18 images are retained under `/home/tom/ios-sweet/build`. There is no ready on-device rollback image.
-- Device is currently in Arch Linux with SSH available. After the user boots iOS, SSH/Android will be unavailable again.
+- Device was booted into iOS by the user. SSH/Android will be unavailable until the user returns to Arch/Android.
 - No assistant boot/kexec/flash/partition change has happened.
 
-Next user-only boot command (sniffer first):
+Last user-only boot command (sniffer first) was:
 
 ```sh
 cd /home/tom/Downloads && sudo ./sweet-usbnet-sniff.sh
@@ -135,7 +150,7 @@ cd /home/tom/Downloads && KERNEL_SRC=/home/tom/Downloads/kernel-v20/kernel.devel
 - V17: combined attempt worked best so far: injection, EAGL, frames and presents; icon pixels fixed by patch 0147; 95 `export failed` remained.
 - V18: syncobj export/import fix removed `export failed` but introduced 335 `CREATE_BO failed` plus restarts. Not a win.
 - V19: userland-only colour fix; normal colours except icons, but BO pool exhaustion and respring. Deployed now.
-- V20: kernel page-table reclaim + shim rollback, pending CI. Targets stability, not smoothness.
+- V20: kernel page-table reclaim + shim MAP_BO rollback. Deployed and booted; no observed reclaim/map-failure path, 183 `CREATE_BO failed`, respring and slowness remain. Not a win.
 
 ## Log triage checklist
 
@@ -172,10 +187,12 @@ Good boot: GPU PASS, EAGL markers, presents, no dead injected `backboardd`, no r
 - V20 install/swap scripts (executed): `/home/tom/Downloads/install-s21eagl-image-v20.sh`, `/home/tom/Downloads/push-and-swap-v20.sh`; both `bash -n` PASS; swap log `/tmp/opencode/v20-swap.log`.
 - Boot script template: `/home/tom/Downloads/boot-hojun-gpu.sh`.
 - V19 boot log: `/home/tom/Downloads/udp-sniff-20261124-204125.txt`.
+- V20 boot log: `/home/tom/Downloads/udp-sniff-20261124-215027.txt`.
 
-## Unresolved after V20 stability
+## Unresolved after V20 boot
 
-- App icons still wrong despite all 16 icon copies succeeding and icon textures reporting 31,092/32,400 pixels lit. Likely swizzle/plane order, not missing pixels.
+- BO failure reason is still hidden. V21 diagnostics must distinguish shim early returns, kernel `kSMCreateBO` rejection, and `kSMImportUser` slot/total pressure before changing behaviour again.
+- Respring is caused by Mesa's NULL deref after `panfrost_resource_create_with_modifier()` returns NULL on BO allocation failure; stopping BO failures is the stability fix.
+- App icons still wrong; mixed fine/pinky icons after V20. Likely swizzle/plane order, not missing pixels.
 - Wallpaper red-bright-at-top is undiagnosed.
-- UI smoothness: current path is ~0.8 fps average with ~113 ms CPU copy-out and heavy GL-call/icon-upload bursts. Need GPU blit/zero-copy for real speed; target 10–20 fps first, not 60.
-- V20 expected outcome: respring gone or much later, `CREATE_BO` failures sharply reduced, stability first; colours/smoothness need separate attempts.
+- UI smoothness: V20 measured 1.52 s/frame mean with 339 ms CPU copy-out and 242 ms IOSurface pre-time. Need GPU blit/zero-copy for real speed; target 10–20 fps first, not 60.
