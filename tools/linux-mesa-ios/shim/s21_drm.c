@@ -76,6 +76,23 @@ struct va_seg {
    bool used;
 };
 
+static void
+log_bo_label(uint32_t handle, const char *label)
+{
+   char line[192];
+   char buf[128];
+   size_t n = 0;
+   if (label != NULL) {
+      while (n + 1 < sizeof(buf) && label[n] != '\0') {
+         unsigned char c = (unsigned char)label[n];
+         buf[n++] = (c >= 0x20 && c < 0x7f) ? (char)c : '?';
+      }
+   }
+   buf[n] = '\0';
+   snprintf(line, sizeof(line), "S21DRM: label h=%u label=%s", handle, buf);
+   s21_iokit_log(line);
+}
+
 static struct {
    pthread_mutex_t lock;
    bool up;
@@ -175,6 +192,14 @@ bo_destroy_locked(uint32_t handle)
    struct s21_bo *b = bo_find_locked(handle);
    if (b == NULL)
       return;
+   {
+      char line[192];
+      snprintf(line, sizeof(line),
+               "S21DRM: destroy h=%u va=%llx size=%llx nk=%u heap=%u k0=%u",
+               handle, (unsigned long long)b->va, (unsigned long long)b->size,
+               b->nk, b->heap, b->nk ? b->k[0] : 0);
+      s21_iokit_log(line);
+   }
    for (uint32_t i = 0; i < b->nk; i++) {
       uint64_t in[1] = { b->k[i] }, out[1] = { 0 };
       uint32_t n = 1;
@@ -467,8 +492,10 @@ drmIoctl(int fd, unsigned long request, void *arg)
       c->offset = va;   /* GPU VA, also returned by GET_BO_OFFSET */
       {
          char line[160];
-         snprintf(line, sizeof(line), "S21DRM: create h=%u va=%llx size=%llx",
-                  c->handle, (unsigned long long)va, (unsigned long long)size);
+         snprintf(line, sizeof(line),
+                  "S21DRM: create h=%u va=%llx size=%llx flags=%x heap=%u k0=%u",
+                  c->handle, (unsigned long long)va, (unsigned long long)size,
+                  (unsigned)c->flags, b->heap ? 1U : 0U, b->nk ? b->k[0] : 0);
          s21_iokit_log(line);
       }
       pthread_mutex_unlock(&C.lock);
@@ -508,13 +535,6 @@ drmIoctl(int fd, unsigned long request, void *arg)
                   s->bo_handle_count);
          s21_iokit_log(line);
       }
-      uint64_t in[3] = { slot, s->jc, 5000 }, out[1] = { 0 };
-      uint32_t n = 1;
-      int e = s21_iokit_scalar(S21_SUBMIT, in, 3, out, &n);
-      if (e)
-         return e;
-      if (n < 1 || out[0] != 0)
-         return -EIO;
       if (s->bo_handle_count > S21_MAX_BO)
          return -EINVAL;
       const uint32_t *handles = (const uint32_t *)(uintptr_t)s->bo_handles;
@@ -532,13 +552,33 @@ drmIoctl(int fd, unsigned long request, void *arg)
          }
       }
       pthread_mutex_unlock(&C.lock);
+
+      uint64_t in[3] = { slot, s->jc, 5000 }, out[1] = { 0 };
+      uint32_t n = 1;
+      int e = s21_iokit_scalar(S21_SUBMIT, in, 3, out, &n);
+      {
+         char line[192];
+         snprintf(line, sizeof(line),
+                  "S21DRM: submit result slot=%u ret=%d out=%llx",
+                  slot, e, (unsigned long long)(n ? out[0] : 0));
+         s21_iokit_log(line);
+      }
+      if (e)
+         return e;
+      if (n < 1 || out[0] != 0)
+         return -EIO;
+      return 0;
+   }
+
+   if (request == DRM_IOCTL_PANFROST_SET_LABEL_BO) {
+      struct drm_panfrost_set_label_bo *l = arg;
+      log_bo_label(l->handle, (const char *)(uintptr_t)l->label);
       return 0;
    }
 
    if (request == DRM_IOCTL_PANFROST_WAIT_BO ||
        request == DRM_IOCTL_PANFROST_SYNC_BO ||
        request == DRM_IOCTL_PANFROST_MADVISE ||
-       request == DRM_IOCTL_PANFROST_SET_LABEL_BO ||
        request == DRM_IOCTL_PANFROST_JM_CTX_CREATE ||
        request == DRM_IOCTL_PANFROST_JM_CTX_DESTROY)
       return 0;   /* SUBMIT is synchronous, all other selectors are optional */

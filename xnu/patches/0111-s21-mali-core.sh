@@ -309,6 +309,26 @@ ctx_map(struct mali_ctx *c, uint64_t va, uint64_t pa)
 	return 0;
 }
 
+/* Diagnostic: walk the AS page tables for a faulting VA and log every level. */
+static void
+ctx_walk_log(struct mali_ctx *c, uint64_t va)
+{
+	static const uint32_t sh[4] = { 39, 30, 21, 12 };
+	uint64_t tbl = c->pgd_pa;
+	for (int l = 0; l < 4; l++) {
+		uint32_t idx = (uint32_t)((va >> sh[l]) & 0x1FF);
+		volatile uint32_t *t = pa2va(tbl);
+		uint64_t e = (uint64_t)t[idx * 2] | ((uint64_t)t[idx * 2 + 1] << 32);
+		mali_log("walk L%d idx %u e %x%08x as %u pgd %x%08x", l, idx,
+		    (uint32_t)(e >> 32), (uint32_t)e, (uint32_t)c->as,
+		    (uint32_t)(c->pgd_pa >> 32), (uint32_t)c->pgd_pa);
+		if (!(e & 1ULL)) {
+			break;
+		}
+		tbl = e & 0x0000FFFFFFFFF000ULL;
+	}
+}
+
 static void
 ctx_activate(struct mali_ctx *c)
 {
@@ -483,8 +503,10 @@ mali_submit_wait(struct mali_ctx *c, uint32_t slot, uint64_t jc_va, uint32_t tim
 	}
 	if (!(raw & (done | fail))) {
 		uint32_t as = (uint32_t)c->as;
+		uint64_t fault_va = ((uint64_t)rd(R_AS(as, 0x24)) << 32) | rd(R_AS(as, 0x20));
 		mali_log("job timeout slot %u js=%x mmu=%x fault=%x addr=%x%08x", slot, rd(R_JS(slot, 0x24)), rd(R_MMU_IRQ_RAW),
 		    rd(R_AS(as, 0x1C)), rd(R_AS(as, 0x24)), rd(R_AS(as, 0x20)));
+		ctx_walk_log(c, fault_va);
 		wr(R_JS(slot, 0x60), JS_COMMAND_HARD_STOP);
 		us(20000);
 		wr(R_JOB_IRQ_CLEAR, 0xFFFFFFFFU);

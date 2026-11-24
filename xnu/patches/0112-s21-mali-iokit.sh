@@ -607,6 +607,8 @@ SweetMaliUserClient::freeBo(uint32_t i)
 	if (b->md == NULL) {
 		return;
 	}
+	sm_log("bo free h=%llu va=%llx pages=%llu ctx=%llu", (uint64_t)i + 1,
+	    b->va, (uint64_t)b->pages, (uint64_t)(int64_t)fCtx);
 	if (b->mapped) {
 		for (uint32_t k = 0; k < b->pages; k++) {
 			sweet_mali_ctx_unmap(fCtx, b->va + ((uint64_t)k << 12));
@@ -836,6 +838,8 @@ SweetMaliUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
 		args->scalarOutput[0] = slot + 1;
 		args->scalarOutput[1] = pa;
 		args->scalarOutputCount = 2;
+		sm_log("bo create h=%llu size=%llx pages=%llu pa=%llx",
+		    (uint64_t)slot + 1, size, (uint64_t)fBo[slot].pages, pa);
 		ret = kIOReturnSuccess;
 		break;
 	}
@@ -870,6 +874,8 @@ SweetMaliUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
 		if (ret == kIOReturnSuccess) {
 			b->va = va;
 			b->mapped = true;
+			sm_log("bo map h=%llu va=%llx pages=%llu ctx=%llu",
+			    h, va, (uint64_t)b->pages, (uint64_t)(int64_t)fCtx);
 			/* the bzero at create went through the kernel's cached mapping: write it back once, so a client that maps
 			 * the BO write-combined (and so never flushes it) cannot have zero lines evicted over GPU data later */
 			sm_flush_md(b->md, b->pages);
