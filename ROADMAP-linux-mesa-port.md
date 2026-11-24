@@ -110,11 +110,15 @@ The kernel GPU driver and display handoff already exist in this tree.
       verified against that build's dyld cache, so no 20F66 address is reused.
       iOS 16 CoreAnimation falls back to `CA::OGL::GLESContext` when Metal gives
       it no context, so no QuartzCore vtable hook is needed.
-- [ ] Inject the bridge into backboardd via the cached launchd job's
-      `DYLD_INSERT_LIBRARIES=/usr/bin/libs21eagl.dylib` (allowed by the existing
-      AMFI dyld-policy 0x5a patch), boot with `SWEETMETAL=1`, and prove that
-      `EAGLContext` methods are patched. V14 source is prepared; no artifact,
-      image, push or boot yet.
+- [x] Built V14 with `libs21eagl.dylib` and patched the cached launchd job's
+      `DYLD_INSERT_LIBRARIES=/usr/bin/libs21eagl.dylib`; the V14 boot showed
+      real UI progress but **zero** `S21EAGL:`/`hakios-gl:` lines, so the plist
+      env was not honoured by the platform binary.
+- [ ] Boot a new kernel with `0145-s21-eagl-backboardd-env.patch`: the exec-time
+      hook appends the same env to `/usr/libexec/backboardd`, logs
+      `S21EAGL-kernel:`, and marks the injected PID in the existing AMFI dyld
+      policy. Boot with `SWEETMETAL=1` and prove `EAGLContext` methods are
+      patched. Kernel patch is prepared; CI artifact and device boot pending.
 - [ ] Verify logo, progress bar, SpringBoard and lock screen.
 
 ### Phase 5 — stabilise

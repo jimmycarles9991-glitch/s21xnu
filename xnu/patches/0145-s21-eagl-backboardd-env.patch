@@ -1,0 +1,174 @@
+diff --git a/bsd/conf/files b/bsd/conf/files
+index 408bfa8..b85e07f 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -106,6 +106,7 @@ bsd/dev/random/randomdev.c		standard
+ bsd/dev/memdev.c			standard
+ bsd/dev/sweet_ufs.c			standard
+ bsd/dev/sweet_sample.c			standard
++bsd/dev/s21_eagl.c			standard
+ bsd/dev/sweet_touch.c                  standard
+ bsd/dev/mem.c				standard
+ bsd/dev/munge.c 			optional config_requires_u32_munging
+diff --git a/bsd/dev/s21_eagl.c b/bsd/dev/s21_eagl.c
+new file mode 100644
+index 0000000..1713e0b
+--- /dev/null
++++ b/bsd/dev/s21_eagl.c
+@@ -0,0 +1,83 @@
++/*
++ * S21 EAGL injection for the render server.
++ *
++ * iOS 16's CoreAnimation falls back to OpenGL ES when Metal is unavailable.
++ * The Mesa-backed shim (/usr/bin/libs21eagl.dylib) must be present in
++ * backboardd for that fallback to reach Panfrost.  The cached launchd job's
++ * DYLD_INSERT_LIBRARIES was not honoured on the platform binary, so append
++ * the variable from exec_extract_strings() instead.  Only the first two
++ * backboardd launches of a boot get the shim: a broken dylib costs two
++ * restarts, after which the render server starts stock.
++ *
++ * boot-arg s21eagl=0 disables injection (default 1).  The dylib path is
++ * checked with vnode_lookup() so kernels booted with older images simply
++ * carry on without a shim.
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <sys/param.h>
++#include <sys/proc.h>
++#include <sys/systm.h>
++#include <sys/vnode.h>
++#include <string.h>
++#include <pexpert/pexpert.h>
++
++int s21_eagl_env(const char *path, int pid, const char **extra, int max);
++uint64_t s21_eagl_dyld_flags(void);
++
++#define S21EAGL_TARGET         "/usr/libexec/backboardd"
++#define S21EAGL_SHIM           "/usr/bin/libs21eagl.dylib"
++#define S21EAGL_MAX_LAUNCHES   2
++#define S21EAGL_AMFI_FLAGS     0x7bull
++
++static int s21eagl_mode = -1;
++static int s21eagl_launches;
++static int s21eagl_pid = -1;
++
++/*
++ * The existing global AMFI stand-in already answers 0x7b to every dyld
++ * policy call.  This query exists only to mark the injected process in the
++ * log; its value is the same, so other processes keep their current answer.
++ */
++uint64_t
++s21_eagl_dyld_flags(void)
++{
++	if (s21eagl_pid < 0 || proc_selfpid() != s21eagl_pid) {
++		return 0;
++	}
++	return S21EAGL_AMFI_FLAGS;
++}
++
++int
++s21_eagl_env(const char *path, int pid, const char **extra, int max)
++{
++	if (s21eagl_mode < 0) {
++		s21eagl_mode = 1;
++		PE_parse_boot_argn("s21eagl", &s21eagl_mode, sizeof(s21eagl_mode));
++	}
++	if (s21eagl_mode == 0 || path == NULL ||
++	    strcmp(path, S21EAGL_TARGET) != 0 || max < 1) {
++		return 0;
++	}
++
++	int launch = ++s21eagl_launches;
++	if (launch > S21EAGL_MAX_LAUNCHES) {
++		printf("S21EAGL-kernel: backboardd launch %d: stock (limit %d)\n",
++		    launch, S21EAGL_MAX_LAUNCHES);
++		return 0;
++	}
++
++	vnode_t vp = NULLVP;
++	if (vnode_lookup(S21EAGL_SHIM, 0, &vp, vfs_context_kernel()) != 0) {
++		printf("S21EAGL-kernel: backboardd launch %d: no %s, stock\n",
++		    launch, S21EAGL_SHIM);
++		return 0;
++	}
++	vnode_put(vp);
++
++	s21eagl_pid = pid;
++	extra[0] = "DYLD_INSERT_LIBRARIES=" S21EAGL_SHIM;
++	printf("S21EAGL-kernel: backboardd launch %d (pid %d): injected %s\n",
++	    launch, pid, S21EAGL_SHIM);
++	return 1;
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+index 68612db..67e8fca 100644
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -5741,6 +5741,28 @@ exec_extract_strings(struct image_params *imgp)
+ 		imgp->ip_envc++;
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* bsd/dev/s21_eagl.c: the Mesa EAGL shim for backboardd. */
++	{
++		extern int s21_eagl_env(const char *path, int pid, const char **extra, int max);
++		const char *extra[1];
++		int n = s21_eagl_env(imgp->ip_strings + strlen(EXECUTABLE_KEY),
++		    proc_getpid(vfs_context_proc(imgp->ip_vfs_context)), extra, 1);
++		for (int i = 0; i < n; i++) {
++			error = exec_add_user_string(imgp, CAST_USER_ADDR_T(extra[i]), UIO_SYSSPACE, TRUE);
++			if (error) {
++				goto bad;
++			}
++			if (imgp->ip_argspace < new_ptr_size) {
++				error = E2BIG;
++				goto bad;
++			}
++			imgp->ip_argspace -= new_ptr_size;
++			imgp->ip_envc++;
++		}
++	}
++#endif
++
+ 	/* Save space for envv[] NULL terminator */
+ 	if (imgp->ip_argspace < new_ptr_size) {
+ 		error = E2BIG;
+diff --git a/bsd/kern/sweet_amfi.c b/bsd/kern/sweet_amfi.c
+index 7dbe3be..0870f7a 100644
+--- a/bsd/kern/sweet_amfi.c
++++ b/bsd/kern/sweet_amfi.c
+@@ -681,6 +681,9 @@ static mac_policy_handle_t sweet_amfi_mac_handle;
+ #define SWEET_AMFI_OP_CHECK_DYLD_POLICY 0x5a
+ #define SWEET_AMFI_DYLD_FLAGS           0x7bull
+ 
++/* Mark the backboardd that got the Mesa EAGL shim (bsd/dev/s21_eagl.c). */
++extern uint64_t s21_eagl_dyld_flags(void);
++
+ static int
+ sweet_dyld_amfi_syscall(struct proc *p, int call, user_addr_t arg)
+ {
+@@ -689,7 +692,9 @@ sweet_dyld_amfi_syscall(struct proc *p, int call, user_addr_t arg)
+ 		user_addr_t out_flags;
+ 	} a;
+ 	uint64_t flags = SWEET_AMFI_DYLD_FLAGS;
++	uint64_t injected = s21_eagl_dyld_flags();
+ 	static int logged;
++	static int injected_logged;
+ 
+ 	if (call != SWEET_AMFI_OP_CHECK_DYLD_POLICY) {
+ 		return ENOPOLICY;
+@@ -697,7 +702,14 @@ sweet_dyld_amfi_syscall(struct proc *p, int call, user_addr_t arg)
+ 	if (copyin(arg, &a, sizeof(a)) != 0 || a.out_flags == 0) {
+ 		return EFAULT;
+ 	}
+-	if (logged < 16) {
++	if (injected != 0) {
++		flags = injected;
++		if (!injected_logged) {
++			injected_logged = 1;
++			printf("S21EAGL-kernel: AMFI dyld policy for injected backboardd (pid %d)\n",
++			    proc_pid(p));
++		}
++	} else if (logged < 16) {
+ 		char name[32];
+ 		logged++;
+ 		proc_name(proc_pid(p), name, sizeof(name));
