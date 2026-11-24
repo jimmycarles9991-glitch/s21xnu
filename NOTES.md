@@ -56,26 +56,31 @@ Fresh concise handoff, 2026-11-24. The old ~450 KB chronology was removed from t
 
 ### V20 CI (correct repo: `jimmycarles9991-glitch/s21xnu`)
 
-| Run | Workflow | Head | Status at last check |
+| Run | Workflow | Head | Result |
 | --- | --- | --- | --- |
-| `45485926430` | xnu | `dda812d` | `in_progress`, updated `2026-11-24T20:56:19Z` |
-| `45486048108` | linux-mesa-ios | `6b90a11` (same source as `dda812d`) | `in_progress`, updated `2026-11-24T20:57:04Z` |
+| `45485926430` | xnu | `dda812d` | **success**, completed `2026-11-24T21:11:35Z` |
+| `45486048108` | linux-mesa-ios | `6b90a11` (same source as `dda812d`) | **success**, completed `2026-11-24T21:08:01Z` |
 
-Check with:
+### Verified artifacts
 
-```sh
-gh api repos/jimmycarles9991-glitch/s21xnu/actions/runs/45485926430 --jq '[.status,.conclusion,.updated_at] | @tsv'
-gh api repos/jimmycarles9991-glitch/s21xnu/actions/runs/45486048108 --jq '[.status,.conclusion,.updated_at] | @tsv'
-```
+- Kernel artifact downloaded to `/home/tom/Downloads/kernel-v20/`; `sha256sum -c SHA256SUMS` PASS.
+- Kernel `/home/tom/Downloads/kernel-v20/kernel.development.sweet`:
+  - SHA-256 `8aed3bbc61ffdf095f24e4ba3bc7bc31358472a6479172aa6d8bf8ebc53382fa`
+  - Mach-O 64-bit arm64.
+  - Strings contain `pool exhausted: used=%u of %u free=%u` and `bo map failed h=%llu va=%llx pages=%llu mapped=%u ctx=%llu pa=%llx`.
+- Userland artifact downloaded to `/home/tom/Downloads/ios-mesa-g78-v20/`; local `SHA256SUMS` created and all 8 files verify PASS; all are Mach-O arm64.
+- V20 changed libs vs V19:
+  - `libs21drm.dylib` `a4fc64c27945a2da849ee99a588e3201c2716c08fbb61f39fa455b9984936c9a`
+  - `libs21eagl.dylib` `31c6876b923c3b335ea3221010a1e43f0e6ae5b68a54e8d1d39b563c3e4da81c`
+- `libs21eagl.dylib` has no V20 source change (`git diff a895199..dda812d -- tools/linux-mesa-ios/eagl` is empty), but its CI hash differs from V19 `cda18228…c12e0a`. Treat that as rebuild nondeterminism; **do not install it**. The V20 image script keeps V19 `libs21eagl.dylib`.
 
 ### Next move
 
-1. Wait for both runs to complete green.
-2. Download and verify both artifacts (`sha256sum -c SHA256SUMS`, Mach-O arm64 file check).
+1. Both CI runs are green and artifacts are verified.
+2. Scripts prepared but **not run**: `/home/tom/Downloads/install-s21eagl-image-v20.sh` and `/home/tom/Downloads/push-and-swap-v20.sh`. The image script replaces only `libs21drm.dylib` in a V19 base and asserts V19 `libs21eagl` stays in place.
 3. Ask explicit approval before one combined V20 deployment.
-4. Prepare one script that stages the new image from V19 and replaces only `libs21drm.dylib`; keep the new kernel as a separate file for the user's boot command.
-5. User returns device to Arch/Android SSH if needed, runs sniffer, then boots with the new kernel file.
-6. Analyse the new UDP log for `pool exhausted`, `bo map failed`, `CREATE_BO failed`, `export failed`, respring, frame timings, EAGL markers, icons and wallpaper.
+4. User returns device to Arch/Android SSH if needed, runs sniffer, then boots with `/home/tom/Downloads/kernel-v20/kernel.development.sweet` and the same `EXTRA="launchd_unsecure_cache=1" SWEETMETAL=1 GPUCOMP=1` args.
+5. Analyse the new UDP log for `pool exhausted`, `bo map failed`, `CREATE_BO failed`, `export failed`, respring, frame timings, EAGL markers, icons and wallpaper.
 
 Expected good V20 signs: `pool exhausted` and `bo map failed` may appear, but `CREATE_BO failed (err=5)` should collapse, no `EXC_CORPSE_NOTIFY`/respring, EAGL markers still present, UI still renders.
 
@@ -146,10 +151,16 @@ Good boot: GPU PASS, EAGL markers, presents, no dead injected `backboardd`, no r
 - EAGL/colour paths: `tools/linux-mesa-ios/eagl/src/eagl.c`, `tools/linux-mesa-ios/eagl/src/gl_s21.c`.
 - IOSurface client-pixel patch: `xnu/patches/0147-s21-iosurface-format-and-client-pixels.patch`.
 - V19 artifact: `/home/tom/Downloads/ios-mesa-g78-v19/`; `sha256sum -c SHA256SUMS` PASS; all 8 files Mach-O arm64.
+- V20 artifact: `/home/tom/Downloads/ios-mesa-g78-v20/`; local `SHA256SUMS` PASS; all 8 files Mach-O arm64.
+- V20 kernel: `/home/tom/Downloads/kernel-v20/kernel.development.sweet`, SHA-256 `8aed3bbc61ffdf095f24e4ba3bc7bc31358472a6479172aa6d8bf8ebc53382fa`.
 - V19 changed libs vs V18:
   - `libs21drm.dylib` `f3ba031a774340cdff051cc7b55753b8ef4901844fe177b280a5846b5620afac`
   - `libs21eagl.dylib` `cda1822897047b630612c6b16e285e617a69d1aa234633d87be82303f8c12e0a`
+- V20 changed libs vs V19:
+  - `libs21drm.dylib` `a4fc64c27945a2da849ee99a588e3201c2716c08fbb61f39fa455b9984936c9a`
+  - `libs21eagl.dylib` `31c6876b923c3b335ea3221010a1e43f0e6ae5b68a54e8d1d39b563c3e4da81c` (rebuild-only; do not install)
 - V19 install/swap scripts: `/home/tom/Downloads/install-s21eagl-image-v19.sh`, `/home/tom/Downloads/push-and-swap-v19.sh`.
+- V20 install/swap scripts (prepared, not run): `/home/tom/Downloads/install-s21eagl-image-v20.sh`, `/home/tom/Downloads/push-and-swap-v20.sh`; both `bash -n` PASS.
 - Boot script template: `/home/tom/Downloads/boot-hojun-gpu.sh`.
 - V19 boot log: `/home/tom/Downloads/udp-sniff-20261124-204125.txt`.
 
