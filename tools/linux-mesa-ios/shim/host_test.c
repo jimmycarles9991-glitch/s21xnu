@@ -88,6 +88,27 @@ test_small_bo_submit_and_map(int fd)
 }
 
 static void
+test_small_bo_16k_alignment(int fd)
+{
+   /* A 4 KiB request must reserve all 16 KiB that the kernel maps and later
+    * unmaps, so consecutive small BOs cannot share GPU page-table entries. */
+   struct drm_panfrost_create_bo a = { .size = 0x1000, .flags = 0 };
+   struct drm_panfrost_create_bo b = { .size = 0x1000, .flags = 0 };
+
+   assert(drmIoctl(fd, DRM_IOCTL_PANFROST_CREATE_BO, &a) == 0);
+   assert(a.size == 0x4000);
+   assert((a.offset & 0x3fff) == 0);
+   assert(drmIoctl(fd, DRM_IOCTL_PANFROST_CREATE_BO, &b) == 0);
+   assert(b.size == 0x4000);
+   assert(b.offset == a.offset + 0x4000);
+   assert(s21_host_live_bos() == 2);
+
+   assert(drmCloseBufferHandle(fd, a.handle) == 0);
+   assert(drmCloseBufferHandle(fd, b.handle) == 0);
+   assert(s21_host_live_bos() == 0);
+}
+
+static void
 test_heap_split(int fd)
 {
    uint64_t va = 0;
@@ -151,6 +172,7 @@ main(void)
 
    test_params(fd);
    test_small_bo_submit_and_map(fd);
+   test_small_bo_16k_alignment(fd);
    test_heap_split(fd);
    test_syncobjs(fd);
    test_import_user(fd);

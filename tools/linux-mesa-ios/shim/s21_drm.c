@@ -32,6 +32,7 @@
 
 #define S21_CHUNK_MAX   (15ULL << 20)    /* SM_MAX_BO_BYTES in 0112 */
 #define S21_TOTAL_MAX   (512ULL << 20)   /* SM_MAX_TOTAL in 0112 */
+#define S21_XNU_PAGE    (16ULL << 10)    /* XNU page_size used by kSMCreateBO in 0112 */
 #define S21_VA_BASE     0x30000000ULL
 #define S21_VA_LIMIT    0x70000000ULL
 #define S21_MAX_CHUNKS  64
@@ -109,11 +110,11 @@ static struct {
 };
 
 static int
-align4096(uint64_t v, uint64_t *out)
+align_bo_size(uint64_t v, uint64_t *out)
 {
-   if (v == 0 || v > UINT64_MAX - 4095)
+   if (v == 0 || v > UINT64_MAX - (S21_XNU_PAGE - 1))
       return -EINVAL;
-   *out = (v + 4095) & ~4095ULL;
+   *out = (v + S21_XNU_PAGE - 1) & ~(S21_XNU_PAGE - 1);
    return 0;
 }
 
@@ -427,7 +428,10 @@ drmIoctl(int fd, unsigned long request, void *arg)
    if (request == DRM_IOCTL_PANFROST_CREATE_BO) {
       struct drm_panfrost_create_bo *c = arg;
       uint64_t size;
-      int e = align4096(c->size, &size);
+      /* kSMCreateBO rounds up to XNU's 16 KiB page and kSMDestroyBO unmaps every
+       * page in its VA range. Reserve that whole range here or a neighbouring
+       * small BO can inherit PTEs that the kernel later clears. */
+      int e = align_bo_size(c->size, &size);
       if (e || size > S21_TOTAL_MAX - C.total)
          return -ENOMEM;
       uint32_t nk = (uint32_t)((size + S21_CHUNK_MAX - 1) / S21_CHUNK_MAX);
@@ -794,6 +798,8 @@ s21_drm_bo_unmap(void *addr, size_t size)
 int
 s21_drm_import_user(uint64_t uva, uint64_t len, uint32_t *handle, uint64_t *gpu_va)
 {
+   /* kSMImportUser maps len>>12 GPU pages and does not round len up to XNU's
+    * 16 KiB page, unlike kSMCreateBO; 4 KiB alignment is correct here. */
    if (uva == 0 || len == 0 || (uva & 0xfff) || (len & 0xfff) ||
        len > S21_CHUNK_MAX)
       return -EINVAL;
