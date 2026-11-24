@@ -78,7 +78,7 @@ The kernel GPU driver and display handoff already exist in this tree.
 - [x] Shared `libs21drm.dylib` linked by both EGL and Panfrost so BO/syncobj state
       is not duplicated across images.
 
-### Phase 3 — one-process GLES proof (clear PASS on device)
+### Phase 3 — one-process GLES proof (complete on device)
 - [x] `tools/linux-mesa-ios/test/s21_gpu_test.c`: surfaceless GLES3 clear/readback
       with `S21GPU: ... PASS/FAIL` output; the signed arm64 binary is in the
       `ios-mesa-g78` artifact and links only the shipped `@rpath` dylibs.
@@ -93,16 +93,15 @@ The kernel GPU driver and display handoff already exist in this tree.
       A post-PASS paint-loop SIGSEGV was caused by a missing `& 0xffff` when decoding
       the packed height; fixed in source and rebuilt as V6 (CI `45265919487`), but
       V6 was intentionally skipped so V7 could include the fix plus new coverage.
-- [ ] Textured quad through Mesa Panfrost on the G78, keeping the full-screen
-      PASS/FAIL panel paint as the visible result. V7 source adds a 2x2 nearest
-      texture, a full-screen quad, alpha blending and exact readback of an opaque
-      texel plus a translucent texel. V7/V8 boots reached `clear PASS` but
-      `s21-gpu-test` was killed by `EXC_RESOURCE ... InactiveHard 6 MB (fatal)`
-      before shaders or texture upload. V8 changed `JetsamMemoryLimit` in the
-      launchd job plist and had no effect. Root cause: `com.apple.jetsamproperties.D22/D221.plist`
-      -> `Version4/Daemon/Override/Global` has `InactiveHardMemoryLimit=6`.
-      V9 adds a `com.s21.gputest` override with 128 MB hard limits; image/push/boot
-      pending.
+- [x] Textured and blended quads through Mesa Panfrost on the G78. V9 Jetsam
+      override fixed the `InactiveHardMemoryLimit=6` kill; V11 page-table walks
+      exposed a shim/kernel 4 KiB vs 16 KiB BO VA overlap; V12 rounds BO size and
+      VA span to 16 KiB. V12 boot 2026-11-24 11:27, log
+      `/home/tom/Downloads/udp-sniff-20261124-112727.txt`: `textured quad PASS
+      rgba=ff0000ff`, `blended quad PASS rgba=8080ffbf`, `clear+quad PASS
+      rgba=8080ffbf`, all 9 submits `ret=0 out=0`, zero timeouts and zero
+      `walk L0` lines. The user-observed full-screen green is the CPU-painted
+      flag; the gate proof is exact `glReadPixels()` PASS.
 - [ ] Present into an IOSurface-backed layer using the existing framebuffer path.
 
 ### Phase 4 — backboardd integration
@@ -139,8 +138,9 @@ regulator were enough to render; no vendor DVFS/OPP needed for first light.
 ## 4. Test checklist (every phase)
 
 1. Kernel log shows Mali up and no `OFF:`/fault lines after a frame.
-2. One solid clear with exact readback, then textured and blended quads.
-3. Full-screen colour result visible on the panel (no shell needed).
+2. [x] One solid clear with exact readback, then textured and blended quads
+   (V12, 2026-11-24).
+3. [x] Full-screen colour result visible on the panel (no shell needed).
 4. Apple logo during the migration screen; then SpringBoard.
 5. 10-minute soak without GPU hang or panic.
 
