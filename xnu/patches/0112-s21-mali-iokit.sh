@@ -37,6 +37,7 @@ cat > iokit/Kernel/arm/SweetMali.cpp <<'EOF_SWEET_SRC'
 #include <libkern/libkern.h>
 #include <kern/thread_call.h>
 #include <kern/clock.h>
+#include <stdarg.h>
 
 extern "C" {
 void sweet_mali_boot(void);
@@ -179,10 +180,13 @@ static uint64_t smb_last_submit;        /* mach time of the last client job (pre
 static uint64_t sm_total;               /* bytes of BOs alive */
 
 static void
-sm_log(const char *fmt, uint64_t a, uint64_t b, uint64_t c)
+sm_log(const char *fmt, ...)
 {
 	char line[160];
-	snprintf(line, sizeof(line), fmt, a, b, c);
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(line, sizeof(line), fmt, ap);
+	va_end(ap);
 	sweet_mali_log_str(line);
 }
 
