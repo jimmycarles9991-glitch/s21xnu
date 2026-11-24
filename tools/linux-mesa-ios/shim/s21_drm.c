@@ -99,8 +99,8 @@ static struct {
    bool up;
    struct s21_bo bo[S21_MAX_BO];
    struct s21_sync sync[S21_MAX_BO];
-   struct va_seg va[128];
-   unsigned nva;
+   struct va_seg *va;
+   unsigned nva, va_cap;
    uint64_t total;
    uint64_t seq;
    int sync_fd[S21_MAX_BO];   /* fd -> syncobj handle + 1, 0 = unused */
@@ -120,19 +120,39 @@ align_bo_size(uint64_t v, uint64_t *out)
 
 /* --- GPU VA allocation -------------------------------------------------- */
 
-static void
+/* CoreAnimation fragments this table far past 128 segments: V16 hit 135 in
+ * backboardd pid 58 and Mesa then failed every CREATE_BO. Let it grow. */
+static int
+va_grow_locked(void)
+{
+   unsigned cap = C.va_cap != 0 ? C.va_cap * 2 : 64;
+   struct va_seg *va = realloc(C.va, (size_t)cap * sizeof(*va));
+   if (va == NULL)
+      return -ENOMEM;
+   C.va = va;
+   C.va_cap = cap;
+   return 0;
+}
+
+static int
 va_init_locked(void)
 {
    if (C.nva == 0) {
+      int e = va_grow_locked();
+      if (e != 0)
+         return e;
       C.va[0] = (struct va_seg){ .lo = S21_VA_BASE, .hi = S21_VA_LIMIT };
       C.nva = 1;
    }
+   return 0;
 }
 
 static int
 va_alloc_locked(uint64_t size, uint64_t *out)
 {
-   va_init_locked();
+   int e = va_init_locked();
+   if (e != 0)
+      return e;
    for (unsigned i = 0; i < C.nva; i++) {
       struct va_seg *s = &C.va[i];
       if (s->used || s->hi - s->lo < size)
@@ -141,8 +161,9 @@ va_alloc_locked(uint64_t size, uint64_t *out)
       if (s->hi - s->lo == size) {
          s->used = true;
       } else {
-         if (C.nva == sizeof(C.va) / sizeof(C.va[0]))
-            return -ENOMEM;
+         if (C.nva == C.va_cap && (e = va_grow_locked()) != 0)
+            return e;
+         s = &C.va[i];          /* realloc may have moved the table */
          s->lo += size;
          C.va[C.nva++] = (struct va_seg){ .lo = start, .hi = start + size, .used = true };
       }

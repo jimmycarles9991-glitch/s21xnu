@@ -109,6 +109,31 @@ test_small_bo_16k_alignment(int fd)
 }
 
 static void
+test_va_table_growth(int fd)
+{
+   /* V16 logged 135 live VA segments in one backboardd, over the old fixed
+    * table of 128. A fragmented run must keep allocating, not return ENOMEM. */
+   enum { N = 192 };
+   uint32_t bo[N];
+   uint64_t va[N];
+
+   for (unsigned i = 0; i < N; i++) {
+      bo[i] = create_bo(fd, 0x4000, 0, &va[i]);
+      for (unsigned j = 0; j < i; j++)
+         assert(va[i] != va[j]);
+   }
+   assert(s21_host_live_bos() == N);
+
+   /* Free every other BO: the table must coalesce without losing the rest. */
+   for (unsigned i = 0; i < N; i += 2)
+      assert(drmCloseBufferHandle(fd, bo[i]) == 0);
+   assert(s21_host_live_bos() == N / 2);
+   for (unsigned i = 1; i < N; i += 2)
+      assert(drmCloseBufferHandle(fd, bo[i]) == 0);
+   assert(s21_host_live_bos() == 0);
+}
+
+static void
 test_heap_split(int fd)
 {
    uint64_t va = 0;
@@ -173,6 +198,7 @@ main(void)
    test_params(fd);
    test_small_bo_submit_and_map(fd);
    test_small_bo_16k_alignment(fd);
+   test_va_table_growth(fd);
    test_heap_split(fd);
    test_syncobjs(fd);
    test_import_user(fd);

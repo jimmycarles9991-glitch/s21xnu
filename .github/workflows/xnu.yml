@@ -107,8 +107,15 @@ jobs:
         run: |
           grep -q 'S21EAGL-kernel: backboardd launch' dxb/xnu/bsd/dev/s21_eagl.c
           grep -q 's21_eagl_env' dxb/xnu/bsd/kern/kern_exec.c
+          grep -q 'define S21EAGL_MAX_LAUNCHES   4' dxb/xnu/bsd/dev/s21_eagl.c
           xcrun nm -gU dxb/fakeroot/System/Library/Kernels/kernel.development.sweet | grep -q '_s21_eagl_env'
           xcrun nm -gU dxb/fakeroot/System/Library/Kernels/kernel.development.sweet | grep -q '_s21_eagl_dyld_flags'
+
+      - name: Verify S21 IOSurface format and client pixels
+        run: |
+          grep -q "s->pixelFormat = 'BGRA';" dxb/xnu/iokit/Kernel/arm/SweetSurface.cpp
+          grep -q 'pixels of %ux%u from client' dxb/xnu/iokit/Kernel/arm/SweetSurface.cpp
+          grep -q 'Both answer with a lock result' dxb/xnu/iokit/Kernel/arm/SweetSurface.cpp
 
       - name: Package build tree for local compiles
         if: always()

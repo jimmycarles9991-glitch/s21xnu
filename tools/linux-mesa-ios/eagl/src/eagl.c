@@ -4272,6 +4272,13 @@ my_attachImage(id self, SEL selector, unsigned long target, IOSurfaceRef surface
 	clear_now(e);
 	glGetIntegerv(GL_TEXTURE_BINDING_2D, &texture);
 	pixels = IOSurfaceGetPixelFormat(surface);
+	/*
+	 * Screen snapshots arrive as ten-bit-per-colour 'w30r'/'l10r'/'w30R'.
+	 * SweetSurface substitutes BGRA of the same geometry at creation time;
+	 * accept the raw tags too in case an older surface reaches us that way.
+	 */
+	if (pixels == 'w30r' || pixels == 'l10r' || pixels == 'w30R')
+		pixels = 'BGRA';
 	/* (Galaxy S7 port: and 'b3a8', see deep_to_bgra()) */
 	bool deep = pixels == 'b3a8' && IOSurfaceGetPlaneCount(surface) == 2;
 	if (target != GL_TEXTURE_2D || texture == 0 || (pixels != 'BGRA' && pixels != 0 && !deep) ||

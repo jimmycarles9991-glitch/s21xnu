@@ -1,0 +1,49 @@
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -288,6 +288,17 @@
+ 	s->elementWidth = (uint8_t)sweet_dict_u32(props, "IOSurfaceElementWidth", 1);
+ 	s->elementHeight = (uint8_t)sweet_dict_u32(props, "IOSurfaceElementHeight", 1);
+ 	s->pixelFormat = sweet_dict_u32(props, "IOSurfacePixelFormat", 0);
++	/*
++	 * CoreAnimation takes screen snapshots in ten bits per colour. The
++	 * panel is not wide-gamut and neither the scaler nor the EAGL shim
++	 * handles those tags; publish ordinary 32-bit BGRA of the same
++	 * geometry instead, as the caller reads the format back from us.
++	 */
++	if (s->pixelFormat == 'w30r' || s->pixelFormat == 'l10r' ||
++	    s->pixelFormat == 'w30R') {
++		s->pixelFormat = 'BGRA';
++		s->bytesPerElement = 4;
++	}
+ 	s->cacheMode = sweet_dict_u32(props, "IOSurfaceCacheMode", 0);
+ 	s->offset = sweet_dict_u32(props, "IOSurfaceOffset", 0);
+ 	if (s->width > SWEET_SURFACE_MAX_DIM || s->height > SWEET_SURFACE_MAX_DIM ||
+@@ -696,6 +707,28 @@
+ 			ret = kIOReturnNoMemory;
+ 		} else {
+ 			bzero(mem->getBytesNoCopy(), s->allocSize);
++			/*
++			 * A surface over the client's own memory is not mapped here
++			 * (selectors 6/7 are refused below), so its starting pixels
++			 * have to be copied in: CoreAnimation's 180x180 icons were
++			 * otherwise black forever.
++			 */
++			{
++				OSNumber *address = OSDynamicCast(OSNumber,
++				    props->getObject("IOSurfaceAddress"));
++				if (address != NULL && address->unsigned64BitValue() != 0) {
++					uint64_t want = (uint64_t)s->bytesPerRow * s->height;
++					uint64_t bytes = want < s->allocSize ? want : s->allocSize;
++					int e = copyin((user_addr_t)address->unsigned64BitValue(),
++					    mem->getBytesNoCopy(), (vm_size_t)bytes);
++					static uint32_t copies_logged;
++					if (copies_logged++ < 16 || e != 0) {
++						IOLog("SWEET SURF: pixels of %ux%u from client 0x%llx (%llu bytes) -> %d\n",
++						    s->width, s->height, address->unsigned64BitValue(),
++						    (unsigned long long)bytes, e);
++					}
++				}
++			}
+ 			s->memory = mem;
+ 			s->mapCache = kIOMapDefaultCache;
+ 			if (!sweet_surface_publish(s)) {

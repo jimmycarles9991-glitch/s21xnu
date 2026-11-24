@@ -1,0 +1,24 @@
+--- a/bsd/dev/s21_eagl.c
++++ b/bsd/dev/s21_eagl.c
+@@ -5,9 +5,9 @@
+  * The Mesa-backed shim (/usr/bin/libs21eagl.dylib) must be present in
+  * backboardd for that fallback to reach Panfrost.  The cached launchd job's
+  * DYLD_INSERT_LIBRARIES was not honoured on the platform binary, so append
+- * the variable from exec_extract_strings() instead.  Only the first two
+- * backboardd launches of a boot get the shim: a broken dylib costs two
+- * restarts, after which the render server starts stock.
++ * the variable from exec_extract_strings() instead.  The first four
++ * backboardd launches of a boot get the shim; later ones start stock so a
++ * broken dylib cannot wedge the boot forever.
+  *
+  * boot-arg s21eagl=0 disables injection (default 1).  The dylib path is
+  * checked with vnode_lookup() so kernels booted with older images simply
+@@ -26,7 +26,7 @@
+ 
+ #define S21EAGL_TARGET         "/usr/libexec/backboardd"
+ #define S21EAGL_SHIM           "/usr/bin/libs21eagl.dylib"
+-#define S21EAGL_MAX_LAUNCHES   2
++#define S21EAGL_MAX_LAUNCHES   4
+ #define S21EAGL_AMFI_FLAGS     0x7bull
+ 
+ static int s21eagl_mode = -1;
