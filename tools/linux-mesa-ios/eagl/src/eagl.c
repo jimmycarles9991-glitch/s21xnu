@@ -4242,7 +4242,8 @@ my_texImageIOSurface(id self, SEL selector, IOSurfaceRef surface, unsigned long 
 		    IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface), IOSurfaceGetPlaneCount(surface), texture, width,
 		    height, plane, invert ? ", inverted" : "");
 	}
-	image->wrapped = IOSurfaceGetPixelFormat(surface) == 0;
+	/* Client memory with a surface made around it is opacity-first ABGR, as in -attachImage:. */
+	image->wrapped = image->alpha_first = IOSurfaceGetPixelFormat(surface) == 0;
 	began = now_us();
 	if (!surface_shared(e, image)) {
 		surface_changed(e, image);              /* (what it adds up to now) */

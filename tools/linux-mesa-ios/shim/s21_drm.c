@@ -14,6 +14,7 @@
 #include "s21_drm.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -981,8 +982,16 @@ drmSyncobjTransfer(int fd, uint32_t dst, uint64_t dst_point,
 int
 drmSyncobjExportSyncFile(int fd, uint32_t handle, int *sync_file_fd)
 {
+   int f;
+
+   (void)fd;
    (void)handle;
-   int f = dup(S21_DRM_FD);
+   if (sync_file_fd == NULL)
+      return -EINVAL;
+   /* S21_DRM_FD is only a fake fd number; dup() on it failed and Mesa logged
+    * "export failed". Submits are synchronous here, so an already-readable
+    * real descriptor is an honest stand-in for a signaled sync_file. */
+   f = open("/dev/null", O_RDONLY);
    if (f < 0)
       return -errno;
    *sync_file_fd = f;
@@ -992,19 +1001,21 @@ drmSyncobjExportSyncFile(int fd, uint32_t handle, int *sync_file_fd)
 int
 drmSyncobjImportSyncFile(int fd, int sync_file_fd, uint32_t handle)
 {
-   (void)fd;
    (void)sync_file_fd;
-   (void)handle;
-   return 0;
+   if (handle == 0)
+      return -EINVAL;
+   /* Every fd exported above represents work that has already completed. */
+   return drmSyncobjSignal(fd, &handle, 1);
 }
 
 int
 drmSyncobjFDToHandle(int fd, int sync_file_fd, uint32_t *handle)
 {
    int f = dup(sync_file_fd);
+
    if (f >= 0)
       close(f);
-   return drmSyncobjCreate(fd, 0, handle);
+   return drmSyncobjCreate(fd, DRM_SYNCOBJ_CREATE_SIGNALED, handle);
 }
 
 int
