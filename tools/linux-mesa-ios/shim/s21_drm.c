@@ -17,6 +17,7 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/eventfd.h>
@@ -464,6 +465,12 @@ drmIoctl(int fd, unsigned long request, void *arg)
       c->handle = slot + 1;
       c->size = size;
       c->offset = va;   /* GPU VA, also returned by GET_BO_OFFSET */
+      {
+         char line[160];
+         snprintf(line, sizeof(line), "S21DRM: create h=%u va=%llx size=%llx",
+                  c->handle, (unsigned long long)va, (unsigned long long)size);
+         s21_iokit_log(line);
+      }
       pthread_mutex_unlock(&C.lock);
       return 0;
    }
@@ -493,6 +500,14 @@ drmIoctl(int fd, unsigned long request, void *arg)
    if (request == DRM_IOCTL_PANFROST_SUBMIT) {
       struct drm_panfrost_submit *s = arg;
       uint32_t slot = (s->requirements & PANFROST_JD_REQ_FS) ? 0 : 1;
+      {
+         char line[192];
+         snprintf(line, sizeof(line),
+                  "S21DRM: submit slot=%u jc=%llx req=%x nbo=%u",
+                  slot, (unsigned long long)s->jc, s->requirements,
+                  s->bo_handle_count);
+         s21_iokit_log(line);
+      }
       uint64_t in[3] = { slot, s->jc, 5000 }, out[1] = { 0 };
       uint32_t n = 1;
       int e = s21_iokit_scalar(S21_SUBMIT, in, 3, out, &n);
@@ -507,8 +522,14 @@ drmIoctl(int fd, unsigned long request, void *arg)
       uint64_t seq = ++C.seq;
       for (uint32_t i = 0; i < s->bo_handle_count; i++) {
          struct s21_bo *b = bo_find_locked(handles[i]);
-         if (b)
+         if (b) {
             b->seq = seq;
+            char line[160];
+            snprintf(line, sizeof(line), "S21DRM: submit bo h=%u va=%llx size=%llx",
+                     handles[i], (unsigned long long)b->va,
+                     (unsigned long long)b->size);
+            s21_iokit_log(line);
+         }
       }
       pthread_mutex_unlock(&C.lock);
       return 0;
