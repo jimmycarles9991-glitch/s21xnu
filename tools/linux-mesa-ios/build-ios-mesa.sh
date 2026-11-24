@@ -171,6 +171,45 @@ install_name_fix() {
    codesign -f -s - "$f"
 }
 for f in "$OUT_DIR"/*.dylib; do install_name_fix "$f"; done
+# The EAGL shim is inserted into backboardd, whose own LC_RPATH list is empty.
+# Give every Mesa dylib a fallback so @rpath dependencies resolve from the
+# installed location in the iOS root (/usr/bin).
+for f in "$OUT_DIR"/*.dylib; do
+   install_name_tool -add_rpath /usr/bin "$f"
+   codesign -f -s - "$f"
+done
+
+# Phase 4: HakiOS's EAGL bridge (MIT, see tools/linux-mesa-ios/eagl/NOTICE.md)
+# patched into EAGLContext, with our surfaceless EGL/GLES3 backend.  iOS 16.7
+# CoreAnimation falls back to its GLES renderer when Metal gives it no context.
+EAGL="$HERE/eagl"
+EAGL_OBJ="$WORK_DIR/eagl-obj"
+rm -rf "$EAGL_OBJ"
+mkdir -p "$EAGL_OBJ"
+nm -gU "$OUT_DIR/libGLESv2.dylib" | awk '$3 ~ /^_gl/ { print substr($3, 2) }' \
+   > "$EAGL_OBJ/exported-gl.txt"
+# Mesa's ES3 library has no ES1 glAlphaFunc; HakiOS's slot table marks it as
+# used by CoreAnimation. Supply a no-op in gl_s21.c rather than an "unmapped
+# slot" log on the first frame.
+echo glAlphaFunc >> "$EAGL_OBJ/exported-gl.txt"
+GL_XML="$MESA/src/mesa/glapi/glapi/registry/gl.xml"
+[[ -f "$GL_XML" ]] || GL_XML="$MESA/src/mapi/glapi/registry/gl.xml"
+[[ -f "$GL_XML" ]] || { echo "ERROR: gl.xml not found in Mesa tree" >&2; exit 1; }
+python3 "$EAGL/mkeagl.py" "$EAGL/src/eagl_slots.txt" \
+   "$GL_XML" "$EAGL_OBJ/exported-gl.txt" \
+   "$EAGL/src/eagl.c" > "$EAGL_OBJ/eagl_gen.h"
+CF_EAGL="-O2 -g -w -I$EAGL_OBJ -I$EAGL/src -I$EAGL/include -I$HERE/shim -I$MESA/include"
+xcrun clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min="$IOS_MIN" \
+   $CF_EAGL -c "$EAGL/src/eagl.c" -o "$EAGL_OBJ/eagl.o"
+xcrun clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min="$IOS_MIN" \
+   $CF_EAGL -c "$EAGL/src/gl_s21.c" -o "$EAGL_OBJ/gl_s21.o"
+xcrun clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min="$IOS_MIN" \
+   -dynamiclib -o "$OUT_DIR/libs21eagl.dylib" "$EAGL_OBJ/eagl.o" "$EAGL_OBJ/gl_s21.o" \
+   -install_name @rpath/libs21eagl.dylib \
+   -L"$OUT_DIR" -lGLESv2 -lEGL -ls21drm \
+   -framework CoreFoundation -framework IOKit -framework IOSurface -lobjc \
+   -Wl,-rpath,/usr/bin -Wl,-undefined,error
+codesign -f -s - "$OUT_DIR/libs21eagl.dylib"
 
 # One-process GLES smoke test. It prints and writes the clear colour.
 xcrun clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min="$IOS_MIN" \

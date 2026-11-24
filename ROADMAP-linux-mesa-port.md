@@ -105,8 +105,16 @@ The kernel GPU driver and display handoff already exist in this tree.
 - [ ] Present into an IOSurface-backed layer using the existing framebuffer path.
 
 ### Phase 4 — backboardd integration
-- [ ] Discover 20H392 CoreAnimation/EAGL symbols; no 20F66 address reuse.
-- [ ] Inject/replace the GL context in backboardd with Metal left off.
+- [x] Use the same-build (20H392 / iOS 16.7.16) HakiOS EAGL bridge from
+      `egemengunel/ios-a5xelte`: its 457-entry `EAGLMacroContext` slot table was
+      verified against that build's dyld cache, so no 20F66 address is reused.
+      iOS 16 CoreAnimation falls back to `CA::OGL::GLESContext` when Metal gives
+      it no context, so no QuartzCore vtable hook is needed.
+- [ ] Inject the bridge into backboardd via the cached launchd job's
+      `DYLD_INSERT_LIBRARIES=/usr/bin/libs21eagl.dylib` (allowed by the existing
+      AMFI dyld-policy 0x5a patch), boot with `SWEETMETAL=1`, and prove that
+      `EAGLContext` methods are patched. V14 source is prepared; no artifact,
+      image, push or boot yet.
 - [ ] Verify logo, progress bar, SpringBoard and lock screen.
 
 ### Phase 5 — stabilise

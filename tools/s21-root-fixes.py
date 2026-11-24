@@ -116,6 +116,28 @@ def main(root):
                     del j['EnvironmentVariables']
                 changed = True
             print('backboardd CA_FORCE_TIMER:', j.get('EnvironmentVariables', {}).get('CA_FORCE_TIMER'))
+    # S21_EAGL_SHIM=1: insert the Mesa-backed EAGL bridge into backboardd. iOS 16's
+    # QuartzCore falls back to its GLES renderer when Metal makes no context (boot
+    # with SWEETMETAL=1). Our kernel's patch 0130 answers dyld's AMFI 0x5a policy
+    # query with allow-all, so DYLD_INSERT_LIBRARIES is honoured for platform
+    # binaries. =0 removes the key; unset leaves the job as it is.
+    shim = os.environ.get('S21_EAGL_SHIM')
+    if shim in ('0', '1'):
+        for j in pl.get('LaunchDaemons', {}).values():
+            if not (isinstance(j, dict) and j.get('Label') == 'com.apple.backboardd'):
+                continue
+            env = j.setdefault('EnvironmentVariables', {})
+            path_shim = '/usr/bin/libs21eagl.dylib'
+            if shim == '1' and env.get('DYLD_INSERT_LIBRARIES') != path_shim:
+                env['DYLD_INSERT_LIBRARIES'] = path_shim
+                changed = True
+            elif shim == '0' and 'DYLD_INSERT_LIBRARIES' in env:
+                del env['DYLD_INSERT_LIBRARIES']
+                if not env:
+                    del j['EnvironmentVariables']
+                changed = True
+            print('backboardd DYLD_INSERT_LIBRARIES:',
+                  j.get('EnvironmentVariables', {}).get('DYLD_INSERT_LIBRARIES'))
     # Wi-Fi (kernel sweetwifi=4): wifid's job is limited to device trees with a 'wlan' or 'marconi-wifi' node, which
     # ours has not, so launchd never started it and Settings showed Wi-Fi off (run215; z3sios drops the key too). Without
     # a radio it comes up, finds no interface and idles (z3sios measured no cost).
