@@ -30,9 +30,9 @@ Fresh concise handoff, 2026-11-24. The old ~450 KB chronology was removed from t
 
 ## Current state: V20 source ready, both CI runs pending
 
-- Branch head: `9fe118f` (`notes: V20 userland CI dispatched`), clean except untracked `s20/`.
+- Branch: `testing-mesa-port`; clean except untracked `s20/`. Check `git log -1` for the current notes-only head.
 - V20 source commit: `dda812d` (`gpu ios: V20 pool reclaim and MAP_BO rollback`).
-- Notes-only commits after source: `6b90a11`, `9fe118f`.
+- Notes-only commits after source: `6b90a11`, `9fe118f`, `880aea5` (compacted handoff from 1044 to 161 lines).
 - No V20 image, push, swap or boot has happened. No V20 artifacts downloaded yet.
 
 ### V20 changes
