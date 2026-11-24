@@ -96,11 +96,13 @@ The kernel GPU driver and display handoff already exist in this tree.
 - [ ] Textured quad through Mesa Panfrost on the G78, keeping the full-screen
       PASS/FAIL panel paint as the visible result. V7 source adds a 2x2 nearest
       texture, a full-screen quad, alpha blending and exact readback of an opaque
-      texel plus a translucent texel. V7 boot (`45270003235`, active image
-      `ec45d17a…c30bb`) reached `clear PASS` but `s21-gpu-test` was killed at
-      `[475.869]` by `EXC_RESOURCE ... InactiveHard 6 MB (fatal)` before shaders or
-      texture upload. Fix prepared as V8: `JetsamMemoryLimit=131072` (128 MB) in
-      `com.s21.gputest.plist`; image/push/boot pending.
+      texel plus a translucent texel. V7/V8 boots reached `clear PASS` but
+      `s21-gpu-test` was killed by `EXC_RESOURCE ... InactiveHard 6 MB (fatal)`
+      before shaders or texture upload. V8 changed `JetsamMemoryLimit` in the
+      launchd job plist and had no effect. Root cause: `com.apple.jetsamproperties.D22/D221.plist`
+      -> `Version4/Daemon/Override/Global` has `InactiveHardMemoryLimit=6`.
+      V9 adds a `com.s21.gputest` override with 128 MB hard limits; image/push/boot
+      pending.
 - [ ] Present into an IOSurface-backed layer using the existing framebuffer path.
 
 ### Phase 4 — backboardd integration
