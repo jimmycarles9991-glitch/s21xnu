@@ -74,32 +74,41 @@ Fresh concise handoff, 2026-11-24. The old ~450 KB chronology was removed from t
   - `libs21eagl.dylib` `31c6876b923c3b335ea3221010a1e43f0e6ae5b68a54e8d1d39b563c3e4da81c`
 - `libs21eagl.dylib` has no V20 source change (`git diff a895199..dda812d -- tools/linux-mesa-ios/eagl` is empty), but its CI hash differs from V19 `cda18228…c12e0a`. Treat that as rebuild nondeterminism; **do not install it**. The V20 image script keeps V19 `libs21eagl.dylib`.
 
+### V20 deployment (approved and completed 2026-11-24)
+
+- User approved full deployment. Host image build was run by the user because this shell has no interactive sudo password; it printed `V20_IMAGE_READY`.
+- Host V20 image `/home/tom/ios-sweet/build/iosroot-hojun-816f870-eagl-v20.img`: SHA-256 `bd34f2f44e5cb9f574a162764ec80ff93d925f40a854011c6c3043525d61e48f`, 17,179,869,184 B, `root:root 644`; pre/post `fsck.hfsplus` both say `The volume iOSRoot appears to be OK`.
+- The image script replaced only `libs21drm.dylib` and asserted that V19 `libs21eagl.dylib` remained in place.
+- Approved push/swap `/home/tom/Downloads/push-and-swap-v20.sh` ran with typed `SWAP_V20` (log `/tmp/opencode/v20-swap.log`). SSH preflight verified Arch Linux, active V19, 31G free.
+- rsync to `/mnt/android-data/linux/iosroot-v20.stage.img`: 17,179,869,184 B at 23.55 MB/s in 11m35s; stage hash verified.
+- Device swap removed active V19 (host copy retained), ran F2FS GC, then wrote sequentially with `dd bs=64M conv=fsync` in 190.609 s at 90.1 MB/s. Final active root verified: SHA-256 `bd34f2f4…15e48f`, `root:root 644`, `extents=3272`, `free_segments=10564`, tunables `2048`/`0`, 31G free. Printed `ACTIVE_V20_READY`.
+- No boot/kexec/flash/partition change by assistant. Device is still in Arch Linux.
+
 ### Next move
 
-1. Both CI runs are green and artifacts are verified.
-2. Scripts prepared but **not run**: `/home/tom/Downloads/install-s21eagl-image-v20.sh` and `/home/tom/Downloads/push-and-swap-v20.sh`. The image script replaces only `libs21drm.dylib` in a V19 base and asserts V19 `libs21eagl` stays in place.
-3. Ask explicit approval before one combined V20 deployment.
-4. User returns device to Arch/Android SSH if needed, runs sniffer, then boots with `/home/tom/Downloads/kernel-v20/kernel.development.sweet` and the same `EXTRA="launchd_unsecure_cache=1" SWEETMETAL=1 GPUCOMP=1` args.
-5. Analyse the new UDP log for `pool exhausted`, `bo map failed`, `CREATE_BO failed`, `export failed`, respring, frame timings, EAGL markers, icons and wallpaper.
+1. User runs sniffer first, then boots once with the V20 kernel file and the exact args above.
+2. Assistant analyses the new UDP log for `pool exhausted`, `bo map failed`, `CREATE_BO failed`, `export failed`, respring, frame timings, EAGL markers, icons and wallpaper.
+3. If stable but colours remain wrong, do a focused icon/wallpaper swizzle/plane-order attempt. Smoothness still needs zero-copy/GPU blit later.
 
 Expected good V20 signs: `pool exhausted` and `bo map failed` may appear, but `CREATE_BO failed (err=5)` should collapse, no `EXC_CORPSE_NOTIFY`/respring, EAGL markers still present, UI still renders.
 
-## Active device state (V19 root + V17 kernel)
+## Active device state (V20 root staged, V20 kernel ready to boot)
 
 - Active root image: `/mnt/android-data/linux/iosroot.img` on device.
-- SHA-256: `4feaa1d933baaeb7af4f1e8124eaa985113f2c45b42390fd0ab697ed6bcd28ee`.
-- Size: `17,179,869,184` B; mode/owner `644 root:root`; `extents=3428` (≤8192 boot cap).
-- Host copy: `/home/tom/ios-sweet/build/iosroot-hojun-816f870-eagl-v19.img`, same SHA-256.
-- Active booted kernel: `/home/tom/Downloads/kernel-v17/kernel.development.sweet`.
-- Kernel SHA-256: `a98e03830ed20ef183f78ac163e987768d626b89d33a56a1f83fd8de582a872b`.
-- Device V18 root `bb4447bdc6413b3464cfa62df5208844b15b82bf7999fd41a220364db4f606db` was deleted during the V19 swap. No ready V18 rollback image found under `/home/tom`.
-- Last known device state: V19 was booted by the user. SSH/Android is unavailable while in iOS; return to Arch/Android before another push.
+- SHA-256: `bd34f2f44e5cb9f574a162764ec80ff93d925f40a854011c6c3043525d61e48f`.
+- Size: `17,179,869,184` B; mode/owner `644 root:root`; `extents=3272` (≤8192 boot cap).
+- Host copy: `/home/tom/ios-sweet/build/iosroot-hojun-816f870-eagl-v20.img`, same SHA-256.
+- Kernel file for the next boot: `/home/tom/Downloads/kernel-v20/kernel.development.sweet`, SHA-256 `8aed3bbc61ffdf095f24e4ba3bc7bc31358472a6479172aa6d8bf8ebc53382fa`.
+- Last booted kernel remained V17 (`a98e0383…a872b`) until the user boots V20; no kernel has been flashed.
+- Device V19 root was deleted during the V20 swap; host V19 and V18 images are retained under `/home/tom/ios-sweet/build`. There is no ready on-device rollback image.
+- Device is currently in Arch Linux with SSH available. After the user boots iOS, SSH/Android will be unavailable again.
 - No assistant boot/kexec/flash/partition change has happened.
 
-Current V19 user-only boot command (will change for V20):
+Next user-only boot command (sniffer first):
 
 ```sh
-cd /home/tom/Downloads && KERNEL_SRC=/home/tom/Downloads/kernel-v17/kernel.development.sweet EXTRA="launchd_unsecure_cache=1" SWEETMETAL=1 GPUCOMP=1 ./boot-hojun-gpu.sh
+cd /home/tom/Downloads && sudo ./sweet-usbnet-sniff.sh
+cd /home/tom/Downloads && KERNEL_SRC=/home/tom/Downloads/kernel-v20/kernel.development.sweet EXTRA="launchd_unsecure_cache=1" SWEETMETAL=1 GPUCOMP=1 ./boot-hojun-gpu.sh
 ```
 
 ## V19 boot result and root cause
@@ -160,7 +169,7 @@ Good boot: GPU PASS, EAGL markers, presents, no dead injected `backboardd`, no r
   - `libs21drm.dylib` `a4fc64c27945a2da849ee99a588e3201c2716c08fbb61f39fa455b9984936c9a`
   - `libs21eagl.dylib` `31c6876b923c3b335ea3221010a1e43f0e6ae5b68a54e8d1d39b563c3e4da81c` (rebuild-only; do not install)
 - V19 install/swap scripts: `/home/tom/Downloads/install-s21eagl-image-v19.sh`, `/home/tom/Downloads/push-and-swap-v19.sh`.
-- V20 install/swap scripts (prepared, not run): `/home/tom/Downloads/install-s21eagl-image-v20.sh`, `/home/tom/Downloads/push-and-swap-v20.sh`; both `bash -n` PASS.
+- V20 install/swap scripts (executed): `/home/tom/Downloads/install-s21eagl-image-v20.sh`, `/home/tom/Downloads/push-and-swap-v20.sh`; both `bash -n` PASS; swap log `/tmp/opencode/v20-swap.log`.
 - Boot script template: `/home/tom/Downloads/boot-hojun-gpu.sh`.
 - V19 boot log: `/home/tom/Downloads/udp-sniff-20261124-204125.txt`.
 
