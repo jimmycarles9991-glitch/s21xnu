@@ -989,8 +989,8 @@ drmSyncobjExportSyncFile(int fd, uint32_t handle, int *sync_file_fd)
    if (sync_file_fd == NULL)
       return -EINVAL;
    /* S21_DRM_FD is only a fake fd number; dup() on it failed and Mesa logged
-    * "export failed". Submits are synchronous here, so an already-readable
-    * real descriptor is an honest stand-in for a signaled sync_file. */
+    * "export failed". Submits are synchronous here, so a real descriptor plus
+    * the signaled import below is an honest stand-in for a sync_file. */
    f = open("/dev/null", O_RDONLY);
    if (f < 0)
       return -errno;
