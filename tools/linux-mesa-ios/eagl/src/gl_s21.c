@@ -2,8 +2,9 @@
  * Galaxy S21 port: the OpenGL ES library behind HakiOS's src/eagl.c (hakios.gl.h),
  * in place of gl_hero.c (OSMesa over HeroGPU).  We already ship a working
  * surfaceless EGL/GLES3 stack for the G78 (tools/linux-mesa-ios), so this
- * backend makes a small ES3 pbuffer context with it and lets eagl.c do its
- * CPU copies between IOSurfaces and ordinary GL textures.  Deliberately no
+ * backend makes small ES3 pbuffer contexts with it, one per calling thread in
+ * one share group, and lets eagl.c do its CPU copies between IOSurfaces and
+ * ordinary GL textures.  Deliberately no
  * direct IOSurface memory sharing (hakios_gl_surface_texture() returns 0):
  * correctness first; direct EGLImage imports can be added after the first
  * backboardd frame is visible.
@@ -28,8 +29,9 @@
 struct hakios_gl {
 	EGLDisplay dpy;
 	EGLConfig cfg;
-	EGLSurface surf;
-	EGLContext ctx;
+	EGLSurface surf;                /* the share group's pbuffer; never made current */
+	EGLContext ctx;                 /* the share group's root context; never made current */
+	int version;
 };
 
 static void
@@ -59,6 +61,68 @@ sayf(const char *format, ...)
 
 static EGLDisplay g_last_dpy = EGL_NO_DISPLAY;
 
+/*
+ * iOS 16's render server creates its EAGLContext on one thread and draws with it on another.
+ * An EGLContext may be current to only one thread, so one shared EGL context cannot serve both:
+ * eglMakeCurrent() fails with EGL_BAD_ACCESS on the drawing thread, every gl* call then has no
+ * context, glCreateShader()/glCreateProgram() return 0, and CoreAnimation crashes when it tries
+ * to use a shader or an IOSurface attachment.  Give each thread its own EGL context and pbuffer
+ * in the same share group instead: GL objects are shared, while current-context state is not
+ * (HakiOS's S7 bridge has the same per-thread requirement in eagl.m).
+ */
+static __thread struct hakios_gl *thread_gl;
+static __thread EGLDisplay thread_dpy = EGL_NO_DISPLAY;
+static __thread EGLContext thread_ctx = EGL_NO_CONTEXT;
+static __thread EGLSurface thread_surf = EGL_NO_SURFACE;
+static unsigned thread_contexts_made;
+
+static const char *
+egl_error_name(EGLint error)
+{
+	switch (error) {
+	case EGL_SUCCESS:               return "EGL_SUCCESS";
+	case EGL_NOT_INITIALIZED:       return "EGL_NOT_INITIALIZED";
+	case EGL_BAD_ACCESS:            return "EGL_BAD_ACCESS";
+	case EGL_BAD_ALLOC:             return "EGL_BAD_ALLOC";
+	case EGL_BAD_ATTRIBUTE:         return "EGL_BAD_ATTRIBUTE";
+	case EGL_BAD_CONFIG:            return "EGL_BAD_CONFIG";
+	case EGL_BAD_CONTEXT:           return "EGL_BAD_CONTEXT";
+	case EGL_BAD_CURRENT_SURFACE:   return "EGL_BAD_CURRENT_SURFACE";
+	case EGL_BAD_DISPLAY:           return "EGL_BAD_DISPLAY";
+	case EGL_BAD_MATCH:             return "EGL_BAD_MATCH";
+	case EGL_BAD_NATIVE_PIXMAP:     return "EGL_BAD_NATIVE_PIXMAP";
+	case EGL_BAD_NATIVE_WINDOW:     return "EGL_BAD_NATIVE_WINDOW";
+	case EGL_BAD_PARAMETER:         return "EGL_BAD_PARAMETER";
+	case EGL_BAD_SURFACE:           return "EGL_BAD_SURFACE";
+	case EGL_CONTEXT_LOST:          return "EGL_CONTEXT_LOST";
+	default:                        return "unknown EGL error";
+	}
+}
+
+static void
+say_egl_failure(const char *what, EGLint error)
+{
+	sayf("S21EAGL: %s failed: %s (0x%x)\n", what, egl_error_name(error), (unsigned)error);
+}
+
+static void
+drop_thread_context(void)
+{
+	if (thread_dpy == EGL_NO_DISPLAY)
+		return;
+	if (thread_ctx != EGL_NO_CONTEXT) {
+		(void)eglMakeCurrent(thread_dpy, EGL_NO_SURFACE,
+		    EGL_NO_SURFACE, EGL_NO_CONTEXT);
+		eglDestroyContext(thread_dpy, thread_ctx);
+	}
+	if (thread_surf != EGL_NO_SURFACE)
+		eglDestroySurface(thread_dpy, thread_surf);
+	thread_gl = NULL;
+	thread_dpy = EGL_NO_DISPLAY;
+	thread_ctx = EGL_NO_CONTEXT;
+	thread_surf = EGL_NO_SURFACE;
+}
+
 struct hakios_gl *
 hakios_gl_create(int version)
 {
@@ -76,9 +140,12 @@ hakios_gl_create(int version)
 		dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
 	if (dpy == EGL_NO_DISPLAY)
 		return NULL;
-	if (!eglInitialize(dpy, NULL, NULL))
+	if (!eglInitialize(dpy, NULL, NULL)) {
+		say_egl_failure("eglInitialize", eglGetError());
 		return NULL;
+	}
 	if (!eglBindAPI(EGL_OPENGL_ES_API)) {
+		say_egl_failure("eglBindAPI", eglGetError());
 		eglTerminate(dpy);
 		return NULL;
 	}
@@ -92,6 +159,7 @@ hakios_gl_create(int version)
 	EGLConfig cfg;
 	EGLint n = 0;
 	if (!eglChooseConfig(dpy, cfg_attr, &cfg, 1, &n) || n < 1) {
+		say_egl_failure("eglChooseConfig", eglGetError());
 		eglTerminate(dpy);
 		return NULL;
 	}
@@ -104,6 +172,8 @@ hakios_gl_create(int version)
 	};
 	EGLContext ctx = eglCreateContext(dpy, cfg, EGL_NO_CONTEXT, ctx_attr);
 	if (surf == EGL_NO_SURFACE || ctx == EGL_NO_CONTEXT) {
+		say_egl_failure(surf == EGL_NO_SURFACE ? "eglCreatePbufferSurface" :
+		    "eglCreateContext", eglGetError());
 		if (surf != EGL_NO_SURFACE)
 			eglDestroySurface(dpy, surf);
 		if (ctx != EGL_NO_CONTEXT)
@@ -122,6 +192,7 @@ hakios_gl_create(int version)
 	gl->cfg = cfg;
 	gl->surf = surf;
 	gl->ctx = ctx;
+	gl->version = version;
 	g_last_dpy = dpy;
 	sayf("S21EAGL: ES%d context created via Mesa Panfrost\n", version);
 	return gl;
@@ -130,10 +201,70 @@ hakios_gl_create(int version)
 int
 hakios_gl_make_current(struct hakios_gl *gl)
 {
-	if (gl == NULL)
-		return eglMakeCurrent(g_last_dpy, EGL_NO_SURFACE,
-		    EGL_NO_SURFACE, EGL_NO_CONTEXT) == EGL_TRUE;
-	return eglMakeCurrent(gl->dpy, gl->surf, gl->surf, gl->ctx) == EGL_TRUE;
+	EGLint error;
+
+	if (gl == NULL) {
+		EGLDisplay dpy = thread_dpy != EGL_NO_DISPLAY ? thread_dpy : g_last_dpy;
+
+		if (dpy == EGL_NO_DISPLAY)
+			return 1;
+		if (eglMakeCurrent(dpy, EGL_NO_SURFACE,
+		    EGL_NO_SURFACE, EGL_NO_CONTEXT) != EGL_TRUE) {
+			say_egl_failure("eglMakeCurrent(NULL)", eglGetError());
+			return 0;
+		}
+		thread_gl = NULL;
+		return 1;
+	}
+
+	if (thread_gl == gl && thread_ctx != EGL_NO_CONTEXT) {
+		if (eglMakeCurrent(gl->dpy, thread_surf, thread_surf,
+		    thread_ctx) == EGL_TRUE)
+			return 1;
+		error = eglGetError();
+		say_egl_failure("eglMakeCurrent(existing thread context)", error);
+		drop_thread_context();
+	} else if (thread_dpy != EGL_NO_DISPLAY) {
+		drop_thread_context();
+	}
+
+	const EGLint pbuf_attr[] = {
+		EGL_WIDTH, S21_WIN, EGL_HEIGHT, S21_WIN, EGL_NONE
+	};
+	const EGLint ctx_attr[] = {
+		EGL_CONTEXT_CLIENT_VERSION, gl->version >= 3 ? 3 : 2, EGL_NONE
+	};
+	EGLSurface surf = eglCreatePbufferSurface(gl->dpy, gl->cfg, pbuf_attr);
+	EGLContext ctx = eglCreateContext(gl->dpy, gl->cfg, gl->ctx, ctx_attr);
+
+	if (surf == EGL_NO_SURFACE || ctx == EGL_NO_CONTEXT) {
+		error = eglGetError();
+		say_egl_failure(surf == EGL_NO_SURFACE ? "eglCreatePbufferSurface(thread)" :
+		    "eglCreateContext(thread)", error);
+		if (ctx != EGL_NO_CONTEXT)
+			eglDestroyContext(gl->dpy, ctx);
+		if (surf != EGL_NO_SURFACE)
+			eglDestroySurface(gl->dpy, surf);
+		return 0;
+	}
+	if (eglMakeCurrent(gl->dpy, surf, surf, ctx) != EGL_TRUE) {
+		error = eglGetError();
+		say_egl_failure("eglMakeCurrent(new thread context)", error);
+		eglDestroyContext(gl->dpy, ctx);
+		eglDestroySurface(gl->dpy, surf);
+		return 0;
+	}
+
+	thread_gl = gl;
+	thread_dpy = gl->dpy;
+	thread_ctx = ctx;
+	thread_surf = surf;
+	unsigned made = ++thread_contexts_made;
+	if (made <= 8) {
+		sayf("S21EAGL: per-thread ES%d context %u made current (share group)\n",
+		    gl->version, made);
+	}
+	return 1;
 }
 
 void
@@ -141,6 +272,7 @@ hakios_gl_destroy(struct hakios_gl *gl)
 {
 	if (gl == NULL)
 		return;
+	drop_thread_context();
 	(void)eglMakeCurrent(gl->dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
 	eglDestroyContext(gl->dpy, gl->ctx);
 	eglDestroySurface(gl->dpy, gl->surf);

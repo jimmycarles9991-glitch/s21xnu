@@ -395,10 +395,11 @@ static void
 eagl_enter(struct eagl *e, unsigned offset)
 {
 	if (current != e) {
-		if (!hakios_gl_make_current(e->gl)) {
+		if (hakios_gl_make_current(e->gl)) {
+			current = e;
+		} else {
 			say("hakios-gl: the context cannot be made this thread's\n");
 		}
-		current = e;
 	}
 	slot_calls[offset / 8]++;
 	e->calls++;
