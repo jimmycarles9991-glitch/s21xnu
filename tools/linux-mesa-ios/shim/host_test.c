@@ -40,7 +40,10 @@ test_params(int fd)
    assert(get_param(fd, DRM_PANFROST_PARAM_TEXTURE_FEATURES3) == 0x000010c6ULL);
 
    struct drm_panfrost_get_param bad = { .param = 99999 };
+   errno = 0;
    assert(drmIoctl(fd, DRM_IOCTL_PANFROST_GET_PARAM, &bad) == -EINVAL);
+   /* Mesa logs errno, not drmIoctl()'s return value. */
+   assert(errno == EINVAL);
 }
 
 static uint32_t
@@ -172,27 +175,22 @@ test_syncobjs(int fd)
 }
 
 static void
-test_syncobj_export(int fd)
+test_syncobj_import_v17(int fd)
 {
-   uint32_t signaled = 0, imported = 0;
-   int efd = -1;
-   uint32_t first = 99;
+   uint32_t imported = 0, from_fd = 0;
 
-   assert(drmSyncobjCreate(fd, DRM_SYNCOBJ_CREATE_SIGNALED, &signaled) == 0);
+   /* V17 behaviour: import does not invent a signal, and FDToHandle creates
+    * an unsignaled syncobj. V18's signaled stand-in destabilised backboardd. */
    assert(drmSyncobjCreate(fd, 0, &imported) == 0);
-   assert(drmSyncobjExportSyncFile(fd, signaled, &efd) == 0);
-   assert(efd >= 0);
-   assert(fcntl(efd, F_GETFD) != -1);
+   assert(drmSyncobjImportSyncFile(fd, STDOUT_FILENO, imported) == 0);
+   assert(drmSyncobjWait(fd, &imported, 1, 0, 0, NULL) == -ETIMEDOUT);
 
-   /* The exported fd stands for completed work; importing it must not leave
-    * Mesa waiting on a syncobj that the shim never signals. */
-   assert(drmSyncobjImportSyncFile(fd, efd, imported) == 0);
-   assert(drmSyncobjWait(fd, &imported, 1, 0, 0, &first) == 0);
-   assert(first == 0);
+   assert(drmSyncobjFDToHandle(fd, STDOUT_FILENO, &from_fd) == 0);
+   assert(from_fd != 0);
+   assert(drmSyncobjWait(fd, &from_fd, 1, 0, 0, NULL) == -ETIMEDOUT);
 
-   close(efd);
-   assert(drmSyncobjDestroy(fd, signaled) == 0);
    assert(drmSyncobjDestroy(fd, imported) == 0);
+   assert(drmSyncobjDestroy(fd, from_fd) == 0);
 }
 
 static void
@@ -227,7 +225,7 @@ main(void)
    test_va_table_growth(fd);
    test_heap_split(fd);
    test_syncobjs(fd);
-   test_syncobj_export(fd);
+   test_syncobj_import_v17(fd);
    test_import_user(fd);
 
    drmVersionPtr v = drmGetVersion(fd);

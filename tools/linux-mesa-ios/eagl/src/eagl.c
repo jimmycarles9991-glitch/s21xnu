@@ -241,6 +241,8 @@ struct image {
 	uint64_t sum;                   /* ... and what it added up to */
 	unsigned cleaned;               /* (Galaxy S7 port) a shared picture: the frame its caches were last cleaned for the GPU */
 	GLenum to, internal, format, type;
+	GLenum stored_internal, stored_format, stored_type;
+	GLsizei stored_width, stored_height;
 	uint32_t plane, seed;
 	GLsizei width, height;
 };
@@ -779,10 +781,24 @@ surface_to_texture(struct eagl *e, struct image *image)
 			IOSurfaceUnlock(image->surface, kIOSurfaceLockReadOnly, NULL);
 			glGetIntegerv(GL_UNPACK_ROW_LENGTH, &row_length);
 			glGetIntegerv(GL_UNPACK_ALIGNMENT, &alignment);
+			GLint internal = (GLint)internal_format(GL_BGRA, GL_BGRA);
+			bool reuse = image->stored_width == image->width && image->stored_height == image->height &&
+			    image->stored_internal == internal && image->stored_format == GL_BGRA &&
+			    image->stored_type == GL_UNSIGNED_BYTE;
+
 			glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
 			glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-			glTexImage2D(GL_TEXTURE_2D, 0, (GLint)internal_format(GL_BGRA, GL_BGRA), image->width, image->height, 0, GL_BGRA,
-			    GL_UNSIGNED_BYTE, pixels);
+			if (reuse) {
+				glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, image->width, image->height, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
+			} else {
+				glTexImage2D(GL_TEXTURE_2D, 0, internal, image->width, image->height, 0, GL_BGRA,
+				    GL_UNSIGNED_BYTE, pixels);
+				image->stored_width = image->width;
+				image->stored_height = image->height;
+				image->stored_internal = internal;
+				image->stored_format = GL_BGRA;
+				image->stored_type = GL_UNSIGNED_BYTE;
+			}
 			glPixelStorei(GL_UNPACK_ROW_LENGTH, row_length);
 			glPixelStorei(GL_UNPACK_ALIGNMENT, alignment);
 			image->seed = IOSurfaceGetSeed(image->surface);
@@ -832,8 +848,21 @@ surface_to_texture(struct eagl *e, struct image *image)
 	glGetIntegerv(GL_UNPACK_ALIGNMENT, &alignment);
 	glPixelStorei(GL_UNPACK_ROW_LENGTH, (GLint)(row / pixel));
 	glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-	glTexImage2D(image->to, 0, (GLint)internal_format(image->internal, image->format), image->width, image->height, 0,
-	    image->format, image->type, base);
+	GLint internal = (GLint)internal_format(image->internal, image->format);
+	bool reuse = image->stored_width == image->width && image->stored_height == image->height &&
+	    image->stored_internal == internal && image->stored_format == image->format &&
+	    image->stored_type == image->type;
+
+	if (reuse) {
+		glTexSubImage2D(image->to, 0, 0, 0, image->width, image->height, image->format, image->type, base);
+	} else {
+		glTexImage2D(image->to, 0, internal, image->width, image->height, 0, image->format, image->type, base);
+		image->stored_width = image->width;
+		image->stored_height = image->height;
+		image->stored_internal = internal;
+		image->stored_format = image->format;
+		image->stored_type = image->type;
+	}
 	glPixelStorei(GL_UNPACK_ROW_LENGTH, row_length);
 	glPixelStorei(GL_UNPACK_ALIGNMENT, alignment);
 	if (!image->target && ((image->width == image->height && image->width >= 100 && image->width <= 200) || image->width >= 900)) {
@@ -890,6 +919,26 @@ surface_to_texture(struct eagl *e, struct image *image)
 	image->seed = IOSurfaceGetSeed(surface);
 	e->uploads++;
 	e->upload_bytes += row * (size_t)image->height;
+}
+
+/* Undo the -attachImage:/-texImageIOSurface: ABGR upload swizzle on copy-out.
+ * glReadPixels(GL_BGRA) gives blue, green, red, opacity; client memory made
+ * around pixels holds opacity, blue, green, red. */
+static void
+bgra_to_opacity_first(uint8_t *base, size_t row, GLsizei width, GLsizei height)
+{
+	for (GLsizei y = 0; y < height; y++) {
+		uint8_t *p = base + row * (size_t)y;
+
+		for (GLsizei x = 0; x < width; x++, p += 4) {
+			uint8_t a = p[3], b = p[0], g = p[1], r = p[2];
+
+			p[0] = a;
+			p[1] = b;
+			p[2] = g;
+			p[3] = r;
+		}
+	}
 }
 
 /* What has been drawn into a texture, into its IOSurface, unless it is there (frame_end() waits for it). */
@@ -955,6 +1004,9 @@ target_to_surface(struct eagl *e, struct image *image)
 		return;
 	}
 	if (IOSurfaceLock(surface, 0, NULL) == 0) {
+		bool planar = IOSurfaceGetPlaneCount(surface) > 0;
+		bool alpha_first = image->alpha_first && !planar && IOSurfaceGetBytesPerElement(surface) == 4;
+
 		base = IOSurfaceGetBaseAddress(surface);
 		glPixelStorei(GL_PACK_ROW_LENGTH, (GLint)(row / 4));
 		glPixelStorei(GL_PACK_ALIGNMENT, 4);
@@ -964,6 +1016,9 @@ target_to_surface(struct eagl *e, struct image *image)
 			for (GLsizei y = 0; y < image->height; y++) {
 				glReadPixels(0, y, image->width, 1, GL_BGRA, GL_UNSIGNED_BYTE, base + row * (size_t)(image->height - 1 - y));
 			}
+		}
+		if (alpha_first) {
+			bgra_to_opacity_first(base, row, image->width, image->height);
 		}
 		glPixelStorei(GL_PACK_ROW_LENGTH, 0);
 		IOSurfaceUnlock(surface, 0, NULL);
@@ -4396,6 +4451,18 @@ install(void)
 	char arguments[1024] = "";
 	size_t size = sizeof(arguments) - 1;
 	const char *argument;
+
+	/* With a GLES context available, iOS 16's render server picks a deep,
+	 * two-plane 'b3a8' framebuffer that this path and the panel do not write.
+	 * As in the A5Xelte backboardd bridge, turn that off before QuartzCore
+	 * reads its preferences so display surfaces stay 8-bit BGRA. */
+	if (strcmp(getprogname(), "backboardd") == 0) {
+		setenv("CA_DISABLE_FRAMEBUFFER_COMPRESSION", "1", 1);
+		CFPreferencesSetAppValue(CFSTR("CAEnableFramebufferCompression"), kCFBooleanFalse, kCFPreferencesCurrentApplication);
+		CFPreferencesSetAppValue(CFSTR("CAEnableIOSurfaceCompression"), kCFBooleanFalse, kCFPreferencesCurrentApplication);
+		CFPreferencesSetAppValue(CFSTR("CAEnableDeepFramebuffer"), kCFBooleanFalse, kCFPreferencesCurrentApplication);
+		say("hakios-gl: disabled deep/compressed framebuffers in backboardd\n");
+	}
 
 	/* the kernel's boot-args are where a run is told things */
 	if (sysctlbyname("kern.bootargs", arguments, &size, NULL, 0) == 0) {

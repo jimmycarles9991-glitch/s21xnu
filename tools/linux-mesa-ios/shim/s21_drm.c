@@ -14,7 +14,6 @@
 #include "s21_drm.h"
 
 #include <errno.h>
-#include <fcntl.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -428,8 +427,8 @@ drmFreeDevices(drmDevicePtr devices[], int count)
    (void)devices; (void)count;
 }
 
-int
-drmIoctl(int fd, unsigned long request, void *arg)
+static int
+drmIoctlImpl(int fd, unsigned long request, void *arg)
 {
    (void)fd;
    if (arg == NULL)
@@ -716,6 +715,18 @@ drmIoctl(int fd, unsigned long request, void *arg)
 }
 
 int
+drmIoctl(int fd, unsigned long request, void *arg)
+{
+   int e = drmIoctlImpl(fd, request, arg);
+
+   /* Mesa logs errno, not ours, on ioctl failure. Without this the V18 log
+    * showed stale 45/34 values and hid the real CREATE_BO error. */
+   if (e < 0)
+      errno = -e;
+   return e;
+}
+
+int
 drmCloseBufferHandle(int fd, uint32_t handle)
 {
    (void)fd;
@@ -982,16 +993,9 @@ drmSyncobjTransfer(int fd, uint32_t dst, uint64_t dst_point,
 int
 drmSyncobjExportSyncFile(int fd, uint32_t handle, int *sync_file_fd)
 {
-   int f;
-
    (void)fd;
    (void)handle;
-   if (sync_file_fd == NULL)
-      return -EINVAL;
-   /* S21_DRM_FD is only a fake fd number; dup() on it failed and Mesa logged
-    * "export failed". Submits are synchronous here, so a real descriptor plus
-    * the signaled import below is an honest stand-in for a sync_file. */
-   f = open("/dev/null", O_RDONLY);
+   int f = dup(S21_DRM_FD);
    if (f < 0)
       return -errno;
    *sync_file_fd = f;
@@ -1001,21 +1005,19 @@ drmSyncobjExportSyncFile(int fd, uint32_t handle, int *sync_file_fd)
 int
 drmSyncobjImportSyncFile(int fd, int sync_file_fd, uint32_t handle)
 {
+   (void)fd;
    (void)sync_file_fd;
-   if (handle == 0)
-      return -EINVAL;
-   /* Every fd exported above represents work that has already completed. */
-   return drmSyncobjSignal(fd, &handle, 1);
+   (void)handle;
+   return 0;
 }
 
 int
 drmSyncobjFDToHandle(int fd, int sync_file_fd, uint32_t *handle)
 {
    int f = dup(sync_file_fd);
-
    if (f >= 0)
       close(f);
-   return drmSyncobjCreate(fd, DRM_SYNCOBJ_CREATE_SIGNALED, handle);
+   return drmSyncobjCreate(fd, 0, handle);
 }
 
 int
