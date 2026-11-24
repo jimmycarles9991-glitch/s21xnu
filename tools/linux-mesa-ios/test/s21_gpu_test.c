@@ -48,7 +48,9 @@ report(const char *stage, int ok, unsigned char r, unsigned char g,
 
 /* SweetMali selector 6 maps the real scanout buffer. Hold the result on the
  * panel so the boot is readable without a shell; AppleCLCD can overwrite the
- * buffer on later presents, so repaint forever like the old SWEETGL test. */
+ * buffer on later presents, so repaint forever like the old SWEETGL test.
+ * S21_GPU_TEST_PAINT_ONCE paints a single frame and lets backboardd present
+ * the UI, for the Phase 4 bring-up boots. */
 static void
 paint_fb(uint32_t colour)
 {
@@ -72,6 +74,7 @@ paint_fb(uint32_t colour)
             width, height, stride, (uint32_t)out[0], colour);
    say(line);
 
+   int once = getenv("S21_GPU_TEST_PAINT_ONCE") != NULL;
    for (;;) {
       for (uint32_t y = 0; y < height; y++) {
          volatile uint32_t *row =
@@ -79,6 +82,8 @@ paint_fb(uint32_t colour)
          for (uint32_t x = 0; x < width; x++)
             row[x] = colour;
       }
+      if (once)
+         break;
       usleep(50000);
    }
 }
