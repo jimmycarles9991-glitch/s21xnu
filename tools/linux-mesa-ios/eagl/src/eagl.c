@@ -790,8 +790,11 @@ deep_channel(uint32_t code)
 	return (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
 }
 
+/* V24: all 8-bit four-channel textures are kept as RGBA inside Mesa.  The
+ * GL_BGRA readback/upload byte order is not reliable on this port, so the
+ * conversions to and from the surface's own byte order are done here. */
 static void
-deep_to_bgra(IOSurfaceRef surface, uint8_t *out, GLsizei width, GLsizei height, bool invert)
+deep_to_rgba(IOSurfaceRef surface, uint8_t *out, GLsizei width, GLsizei height, bool invert)
 {
 	const uint8_t *colour = IOSurfaceGetBaseAddressOfPlane(surface, 0), *opacity = IOSurfaceGetBaseAddressOfPlane(surface, 1);
 	size_t crow = IOSurfaceGetBytesPerRowOfPlane(surface, 0), arow = IOSurfaceGetBytesPerRowOfPlane(surface, 1);
@@ -803,16 +806,16 @@ deep_to_bgra(IOSurfaceRef surface, uint8_t *out, GLsizei width, GLsizei height, 
 		uint8_t *to = out + (size_t)y * (size_t)width * 4;
 
 		for (GLsizei x = 0; x < width; x++) {
-			to[x * 4] = deep_channel(c[x] & 0x3ff);
-			to[x * 4 + 1] = deep_channel((c[x] >> 10) & 0x3ff);
-			to[x * 4 + 2] = deep_channel((c[x] >> 20) & 0x3ff);
+			to[x * 4] = deep_channel((c[x] >> 20) & 0x3ff);      /* red */
+			to[x * 4 + 1] = deep_channel((c[x] >> 10) & 0x3ff);  /* green */
+			to[x * 4 + 2] = deep_channel(c[x] & 0x3ff);           /* blue */
 			to[x * 4 + 3] = a[x];
 		}
 	}
 }
 
 static void
-bgra_to_deep(const uint8_t *in, IOSurfaceRef surface, GLsizei width, GLsizei height, bool invert)
+rgba_to_deep(const uint8_t *in, IOSurfaceRef surface, GLsizei width, GLsizei height, bool invert)
 {
 	uint8_t *colour = IOSurfaceGetBaseAddressOfPlane(surface, 0), *opacity = IOSurfaceGetBaseAddressOfPlane(surface, 1);
 	size_t crow = IOSurfaceGetBytesPerRowOfPlane(surface, 0), arow = IOSurfaceGetBytesPerRowOfPlane(surface, 1);
@@ -824,8 +827,9 @@ bgra_to_deep(const uint8_t *in, IOSurfaceRef surface, GLsizei width, GLsizei hei
 		const uint8_t *from = in + (size_t)y * (size_t)width * 4;
 
 		for (GLsizei x = 0; x < width; x++) {
-			c[x] = (384u + from[x * 4] * 510u / 255u) | (384u + from[x * 4 + 1] * 510u / 255u) << 10 |
-			    (384u + from[x * 4 + 2] * 510u / 255u) << 20;
+			c[x] = (384u + from[x * 4 + 2] * 510u / 255u) |          /* blue */
+			    (384u + from[x * 4 + 1] * 510u / 255u) << 10 |       /* green */
+			    (384u + from[x * 4] * 510u / 255u) << 20;           /* red */
 			a[x] = from[x * 4 + 3];
 		}
 	}
@@ -841,26 +845,26 @@ surface_to_texture(struct eagl *e, struct image *image)
 		if (pixels != NULL && IOSurfaceLock(image->surface, kIOSurfaceLockReadOnly, NULL) == 0) {
 			GLint alignment = 4, row_length = 0;
 
-			deep_to_bgra(image->surface, pixels, image->width, image->height, image->invert);
+			deep_to_rgba(image->surface, pixels, image->width, image->height, image->invert);
 			IOSurfaceUnlock(image->surface, kIOSurfaceLockReadOnly, NULL);
 			glGetIntegerv(GL_UNPACK_ROW_LENGTH, &row_length);
 			glGetIntegerv(GL_UNPACK_ALIGNMENT, &alignment);
-			GLint internal = (GLint)internal_format(GL_BGRA, GL_BGRA);
+			GLint internal = GL_RGBA;
 			bool reuse = image->stored_width == image->width && image->stored_height == image->height &&
-			    image->stored_internal == internal && image->stored_format == GL_BGRA &&
+			    image->stored_internal == internal && image->stored_format == GL_RGBA &&
 			    image->stored_type == GL_UNSIGNED_BYTE;
 
 			glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
 			glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
 			if (reuse) {
-				glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, image->width, image->height, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
+				glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, image->width, image->height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
 			} else {
-				glTexImage2D(GL_TEXTURE_2D, 0, internal, image->width, image->height, 0, GL_BGRA,
+				glTexImage2D(GL_TEXTURE_2D, 0, internal, image->width, image->height, 0, GL_RGBA,
 				    GL_UNSIGNED_BYTE, pixels);
 				image->stored_width = image->width;
 				image->stored_height = image->height;
 				image->stored_internal = internal;
-				image->stored_format = GL_BGRA;
+				image->stored_format = GL_RGBA;
 				image->stored_type = GL_UNSIGNED_BYTE;
 			}
 			glPixelStorei(GL_UNPACK_ROW_LENGTH, row_length);
@@ -878,8 +882,13 @@ surface_to_texture(struct eagl *e, struct image *image)
 	unsigned pixel = bytes_a_pixel(image->format, image->type);
 	GLint row_length = 0, alignment = 4;
 	uint8_t *base, *flipped = NULL;
-	bool alpha_first = image->alpha_first && !planar && pixel == 4;
-	bool bgra_for_rgba = image->bgra_for_rgba && !planar && pixel == 4 && image->format == GL_RGBA;
+	bool rgba_bytes = pixel == 4 && image->type == GL_UNSIGNED_BYTE && !planar;
+	bool alpha_first = image->alpha_first && rgba_bytes;
+	bool bgra_for_rgba = image->bgra_for_rgba && rgba_bytes && image->format == GL_RGBA;
+	/* A requested GL_BGRA texture also arrives as blue, green, red, opacity.
+	 * V24 stores every 8-bit four-channel texture as GL_RGBA instead of
+	 * trusting this Mesa port's GL_BGRA upload/readback byte order. */
+	bool bgra_request = image->format == GL_BGRA && rgba_bytes && !alpha_first && !bgra_for_rgba;
 
 	if (image->shared) {
 		return;
@@ -889,18 +898,19 @@ surface_to_texture(struct eagl *e, struct image *image)
 		return;
 	}
 	base = planar ? IOSurfaceGetBaseAddressOfPlane(surface, image->plane) : IOSurfaceGetBaseAddress(surface);
-	if ((image->invert || alpha_first || bgra_for_rgba) && (flipped = calloc(row, (size_t)image->height)) != NULL) {
+	if ((image->invert || alpha_first || bgra_for_rgba || bgra_request) &&
+	    (flipped = calloc(row, (size_t)image->height)) != NULL) {
 		for (GLsizei y = 0; y < image->height; y++) {
 			const uint8_t *from = base + row * (size_t)(image->invert ? image->height - 1 - y : y);
 			uint8_t *to = flipped + row * (size_t)y;
 			size_t used = (size_t)image->width * pixel;     /* (the last row may end where its pixels do) */
 
-			if (!alpha_first && !bgra_for_rgba) {
+			if (!alpha_first && !bgra_for_rgba && !bgra_request) {
 				memcpy(to, from, used < row ? used : row);
 				continue;
 			}
-			if (bgra_for_rgba) {
-				/* The bytes are blue, green, red, opacity although GL_RGBA was requested. */
+			if (bgra_for_rgba || bgra_request) {
+				/* Blue, green, red, opacity in memory into RGBA. */
 				for (size_t at = 0; at + 4 <= used && at + 4 <= row; at += 4) {
 					to[at] = from[at + 2];
 					to[at + 1] = from[at + 1];
@@ -909,11 +919,11 @@ surface_to_texture(struct eagl *e, struct image *image)
 				}
 				continue;
 			}
-			/* opacity, blue, green, red in memory: into the order OpenGL ES was told */
+			/* Opacity, blue, green, red in memory into RGBA. */
 			for (size_t at = 0; at + 4 <= used && at + 4 <= row; at += 4) {
-				to[at] = from[at + (image->format == GL_BGRA ? 1 : 3)];
+				to[at] = from[at + 3];
 				to[at + 1] = from[at + 2];
-				to[at + 2] = from[at + (image->format == GL_BGRA ? 3 : 1)];
+				to[at + 2] = from[at + 1];
 				to[at + 3] = from[at];
 			}
 		}
@@ -923,19 +933,20 @@ surface_to_texture(struct eagl *e, struct image *image)
 	glGetIntegerv(GL_UNPACK_ALIGNMENT, &alignment);
 	glPixelStorei(GL_UNPACK_ROW_LENGTH, (GLint)(row / pixel));
 	glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-	GLint internal = (GLint)internal_format(image->internal, image->format);
+	GLint upload_internal = rgba_bytes ? GL_RGBA : (GLint)internal_format(image->internal, image->format);
+	GLenum upload_format = rgba_bytes ? GL_RGBA : image->format;
 	bool reuse = image->stored_width == image->width && image->stored_height == image->height &&
-	    image->stored_internal == internal && image->stored_format == image->format &&
+	    image->stored_internal == upload_internal && image->stored_format == upload_format &&
 	    image->stored_type == image->type;
 
 	if (reuse) {
-		glTexSubImage2D(image->to, 0, 0, 0, image->width, image->height, image->format, image->type, base);
+		glTexSubImage2D(image->to, 0, 0, 0, image->width, image->height, upload_format, image->type, base);
 	} else {
-		glTexImage2D(image->to, 0, internal, image->width, image->height, 0, image->format, image->type, base);
+		glTexImage2D(image->to, 0, upload_internal, image->width, image->height, 0, upload_format, image->type, base);
 		image->stored_width = image->width;
 		image->stored_height = image->height;
-		image->stored_internal = internal;
-		image->stored_format = image->format;
+		image->stored_internal = upload_internal;
+		image->stored_format = upload_format;
 		image->stored_type = image->type;
 	}
 	glPixelStorei(GL_UNPACK_ROW_LENGTH, row_length);
@@ -996,22 +1007,25 @@ surface_to_texture(struct eagl *e, struct image *image)
 	e->upload_bytes += row * (size_t)image->height;
 }
 
-/* Undo the -attachImage:/-texImageIOSurface: ABGR upload swizzle on copy-out.
- * glReadPixels(GL_BGRA) gives blue, green, red, opacity; client memory made
- * around pixels holds opacity, blue, green, red. */
+/* V24: readback is always GL_RGBA.  Put those values into the byte order the
+ * IOSurface actually uses: BGRA for ordinary surfaces, ABGR for the wrapped
+ * opacity-first masks CoreAnimation draws into. */
 static void
-bgra_to_opacity_first(uint8_t *base, size_t row, GLsizei width, GLsizei height)
+rgba_to_surface(uint8_t *to, const uint8_t *from, size_t width, bool alpha_first)
 {
-	for (GLsizei y = 0; y < height; y++) {
-		uint8_t *p = base + row * (size_t)y;
+	for (size_t x = 0; x < width; x++, from += 4, to += 4) {
+		uint8_t r = from[0], g = from[1], b = from[2], a = from[3];
 
-		for (GLsizei x = 0; x < width; x++, p += 4) {
-			uint8_t a = p[3], b = p[0], g = p[1], r = p[2];
-
-			p[0] = a;
-			p[1] = b;
-			p[2] = g;
-			p[3] = r;
+		if (alpha_first) {
+			to[0] = a;
+			to[1] = b;
+			to[2] = g;
+			to[3] = r;
+		} else {
+			to[0] = b;
+			to[1] = g;
+			to[2] = r;
+			to[3] = a;
 		}
 	}
 }
@@ -1062,15 +1076,15 @@ target_to_surface(struct eagl *e, struct image *image)
 	}
 	glBindFramebuffer(GL_FRAMEBUFFER, e->reader);
 	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, image->texture, 0);
-	if (image->deep) {              /* (Galaxy S7 port) read back blue-first, then into the two planes */
+	if (image->deep) {              /* (Galaxy S7 port) read back RGBA, then into the two planes */
 		uint8_t *pixels = malloc((size_t)image->width * (size_t)image->height * 4);
 
 		if (pixels != NULL) {
 			glPixelStorei(GL_PACK_ROW_LENGTH, 0);
 			glPixelStorei(GL_PACK_ALIGNMENT, 4);
-			glReadPixels(0, 0, image->width, image->height, GL_BGRA, GL_UNSIGNED_BYTE, pixels);
+			glReadPixels(0, 0, image->width, image->height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
 			if (IOSurfaceLock(surface, 0, NULL) == 0) {
-				bgra_to_deep(pixels, surface, image->width, image->height, image->invert);
+				rgba_to_deep(pixels, surface, image->width, image->height, image->invert);
 				IOSurfaceUnlock(surface, 0, NULL);
 			}
 			free(pixels);
@@ -1081,36 +1095,32 @@ target_to_surface(struct eagl *e, struct image *image)
 	if (IOSurfaceLock(surface, 0, NULL) == 0) {
 		bool planar = IOSurfaceGetPlaneCount(surface) > 0;
 		bool alpha_first = image->alpha_first && !planar && IOSurfaceGetBytesPerElement(surface) == 4;
-		uint8_t *bounce = NULL;
+		uint8_t *bounce = malloc(row * (size_t)image->height);
 
 		base = IOSurfaceGetBaseAddress(surface);
 		glPixelStorei(GL_PACK_ROW_LENGTH, (GLint)(row / 4));
 		glPixelStorei(GL_PACK_ALIGNMENT, 4);
-		/* V21: one full readback plus a CPU row flip. The old inverted path
-		 * issued one glReadPixels() per row and was a large part of the
-		 * ~339 ms copy-out seen in the V20 log. */
-		if (image->invert)
-			bounce = malloc(row * (size_t)image->height);
-		if (!image->invert || bounce != NULL) {
-			glReadPixels(0, 0, image->width, image->height, GL_BGRA, GL_UNSIGNED_BYTE,
-			    bounce != NULL ? bounce : base);
-			if (bounce != NULL) {
-				for (GLsizei y = 0; y < image->height; y++) {
-					memcpy(base + row * (size_t)(image->height - 1 - y),
-					    bounce + row * (size_t)y, row);
-				}
-				free(bounce);
-			}
-			if (alpha_first)
-				bgra_to_opacity_first(base, row, image->width, image->height);
-		} else {
-			/* Malloc failed: keep the old row-at-a-time fallback. */
+		/* V24: one full RGBA readback, then flip and swizzle into the
+		 * surface in one pass. V21 kept the one-readback shape but trusted
+		 * GL_BGRA, which swapped red and blue on this Mesa port. */
+		if (bounce != NULL) {
+			glReadPixels(0, 0, image->width, image->height, GL_RGBA, GL_UNSIGNED_BYTE, bounce);
 			for (GLsizei y = 0; y < image->height; y++) {
-				glReadPixels(0, y, image->width, 1, GL_BGRA, GL_UNSIGNED_BYTE,
-				    base + row * (size_t)(image->height - 1 - y));
+				const uint8_t *from = bounce + row * (size_t)y;
+				uint8_t *to = base + row * (size_t)(image->invert ? image->height - 1 - y : y);
+
+				rgba_to_surface(to, from, (size_t)image->width, alpha_first);
 			}
-			if (alpha_first)
-				bgra_to_opacity_first(base, row, image->width, image->height);
+			free(bounce);
+		} else {
+			/* Malloc failed: row-at-a-time fallback. rgba_to_surface() is
+			 * safe with the same buffer as source and destination. */
+			for (GLsizei y = 0; y < image->height; y++) {
+				uint8_t *to = base + row * (size_t)(image->invert ? image->height - 1 - y : y);
+
+				glReadPixels(0, y, image->width, 1, GL_RGBA, GL_UNSIGNED_BYTE, to);
+				rgba_to_surface(to, to, (size_t)image->width, alpha_first);
+			}
 		}
 		glPixelStorei(GL_PACK_ROW_LENGTH, 0);
 		IOSurfaceUnlock(surface, 0, NULL);

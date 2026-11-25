@@ -319,6 +319,19 @@ static unsigned imports_made, imports_failed;
 typedef void (*target_texture_fn)(GLenum, GLeglImageOES);
 static target_texture_fn target_texture;
 
+static void
+import_refused(const char *why, IOSurfaceRef surface, size_t row,
+    size_t height, size_t needed, size_t alloc)
+{
+	static unsigned told;
+
+	if (told++ < 16) {
+		sayf("S21EAGL: IOSurface %u not importable (%s; %zux%zu row=%zu need=%zu alloc=%zu)\n",
+		    IOSurfaceGetID(surface), why, (size_t)IOSurfaceGetWidth(surface), height, row, needed,
+		    alloc);
+	}
+}
+
 static bool
 importable(IOSurfaceRef surface, size_t *row_out, size_t *height_out,
     size_t *size_out)
@@ -327,24 +340,30 @@ importable(IOSurfaceRef surface, size_t *row_out, size_t *height_out,
 	size_t height = IOSurfaceGetHeight(surface);
 	size_t row = IOSurfaceGetBytesPerRow(surface);
 	size_t needed;
+	size_t alloc;
+	size_t size;
 
-	if (IOSurfaceGetPixelFormat(surface) != 'BGRA' ||
-	    IOSurfaceGetPlaneCount(surface) != 0 ||
-	    IOSurfaceGetBytesPerElement(surface) != 4 ||
-	    width == 0 || height == 0 || row < width * 4 ||
-	    IOSurfaceGetBaseAddress(surface) == NULL ||
-	    row > S21_IMPORT_MAX / height) {
+	if (IOSurfaceGetPixelFormat(surface) != 'BGRA') {
+		import_refused("pixel format", surface, row, height, 0, 0);
+		return false;
+	}
+	if (IOSurfaceGetPlaneCount(surface) != 0 || IOSurfaceGetBytesPerElement(surface) != 4 ||
+	    width == 0 || height == 0 || row < width * 4 || IOSurfaceGetBaseAddress(surface) == NULL) {
+		import_refused("shape", surface, row, height, 0, 0);
 		return false;
 	}
 	needed = row * height;
-	/* kSMImportUser maps whole 4 KiB pages. The allocation size is usually
-	 * already page-aligned and includes the last row's padding; using it also
-	 * lets small wrapped surfaces be imported. */
-	size_t alloc = IOSurfaceGetAllocSize(surface);
-	size_t size = alloc >= needed ? alloc : needed;
-
-	if (size == 0 || size > S21_IMPORT_MAX || (size & 0xfff) != 0)
+	alloc = IOSurfaceGetAllocSize(surface);
+	/* kSMImportUser maps whole 4 KiB pages and requires a page-multiple length.
+	 * IOSurfaceGetAllocSize() is not necessarily page-aligned: the 1125x2436
+	 * display surface is 11,225,088 bytes, which V22/V23 rejected here. Round
+	 * up instead of requiring the allocation itself to be aligned. */
+	size = alloc >= needed ? alloc : needed;
+	size = (size + 0xfff) & ~(size_t)0xfff;
+	if (size == 0 || size > S21_IMPORT_MAX) {
+		import_refused("size", surface, row, height, needed, alloc);
 		return false;
+	}
 	*row_out = row;
 	*height_out = height;
 	*size_out = size;
