@@ -116,6 +116,13 @@ Fresh concise handoff, 2026-11-24. The old ~450 KB chronology was removed from t
 - `tools/linux-mesa-ios/shim/s21_iokit_host.c`, `host_test.c`
   - Host model now has 512 BO slots; tests cover 300 live BOs and best-fit VA reuse.
 
+### V21 CI dispatched
+
+| Run | Workflow | Head | Status |
+| --- | --- | --- | --- |
+| `45577164674` | xnu | `bdef6e2` | dispatched `2026-11-25` |
+| `45577164974` | linux-mesa-ios | `bdef6e2` | dispatched `2026-11-25` |
+
 ### V21 local checks already done
 
 - `git diff --check`: PASS.
