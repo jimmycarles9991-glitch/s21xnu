@@ -29,7 +29,7 @@ artifacts are verified. No V25 image, swap or boot has happened.
 | GPU proof | **Passed** | `S21GPU: clear PASS rgba=00ff00ff`, textured quad, blended quad and clear+quad readback PASS. |
 | backboardd/EAGL UI | **Working but not final** | 8/8 EAGL methods replaced, no respring/backboardd crash in V22/V23, visible iOS UI. Colours and some icons/UI details still wrong. |
 | Storage | Working for boot | File-backed HFS+ root in `userdata`; XNU UFS remains read-only, with RAM-overlay/rootrw used for recent boots. Preserve partitions and backups. |
-| Open GPU work | V25 (CI green, not deployed) | Restore V23 deep/copy-out path, implicit dma-buf modifiers, native BGRA upload for BGRA clients/targets, BGRA class for all format-0 texImage pictures, London timezone default; verify icon colours, Clock sub-icons, ghosting, import modifiers and speed. |
+| Open GPU work | V25 (CI green, image script fixed, not deployed) | Restore V23 deep/copy-out path, implicit dma-buf modifiers, native BGRA upload for BGRA clients/targets, BGRA class for all format-0 texImage pictures, full zoneinfo database with London default and `TZ_DEFAULT` override; verify icon colours, Clock sub-icons, ghosting, import modifiers and speed. |
 | Not yet proven | 10-minute soak, USB networking inside iOS, Wi-Fi, cellular, cameras, audio | Keep these separate from the GPU win. |
 
 ## 0. Goal and decisions
