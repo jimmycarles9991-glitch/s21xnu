@@ -37,8 +37,13 @@ Updated 2026-11-25. Keep this file short: it is the active handoff for the next 
   - xnu run `45596778651` on head `d0ba852`: **success**, completed `2026-11-25T10:49:34Z`. Kernel artifact downloaded to `/home/tom/Downloads/kernel-v22/`; `SHA256SUMS` PASS; Mach-O arm64; SHA-256 `1607a49d53ea12c26f5a7b8b28444f39a07774424fb8690beb648fed9c0da8cd`. Same size as V21 (`17,472,176` B) and `xnu/patches/0112-s21-mali-iokit.sh` is byte-identical to V21; binary hash differs only because of rebuild. Selector 11 is present in the V21/V22 source; V21 boot used it successfully via the shim.
   - First linux-mesa-ios run `45596778741` on head `d0ba852`: **failed**; `gl_s21.c` used `<IOSurface/IOSurface.h>`, which the iOS SDK exposes as `<IOSurface/IOSurfaceRef.h>` (same header `eagl.c` already uses).
   - Fix commit `52010e9`; linux-mesa-ios rerun `45598612838` also **failed**: `gl_s21.c` could not find the fake `<xf86drm.h>` because the EAGL compile lacked `-I$HERE/include`.
-  - Fix commit `2ddd129` adds that include path; linux-mesa-ios `45600557745` on head `2ddd129`: **running**.
-- **No V22 artifacts, image, push, swap or boot has happened yet.** No V22 deployment is approved. Ask before any device write.
+  - Fix commit `2ddd129` adds that include path; linux-mesa-ios `45600557745` on head `2ddd129`: **success**, completed `2026-11-25T11:11:10Z`. Host test passed inside CI.
+- V22 artifacts are downloaded and verified locally. **No V22 image, push, swap or boot has happened yet.** No V22 deployment is approved. Ask before any device write.
+- Userland artifact: `/home/tom/Downloads/ios-mesa-g78-v22/`; local `SHA256SUMS` PASS; all 8 files Mach-O arm64.
+- V22 changed libs vs V21:
+  - `libgallium-26.2.4.dylib` `b68bc18f3e409fb2d4ec6482ce0f7f1d6bc2214200ba77c09ad1e9a002e147a2`
+  - `libs21drm.dylib` `7e82ccff8062413c578dea4f665a9cf0319807eefc8c5dc783fe2b84eed26ad3`
+  - `libs21eagl.dylib` `cc3104e8728ee7de1dcd4bd1468b5974432dc084e5434756eb6a202aa8ce7f8b`
 - Kernel patch is unchanged for V22: the V21 kernel already implements selector 11 (`kSMSubmitList`). A V22 boot can reuse `/home/tom/Downloads/kernel-v21/kernel.development.sweet`; userland must be rebuilt from V22 source.
 
 ## V21 boot result (observed, 2026-11-25)
@@ -89,7 +94,7 @@ Expected outcome is uncertain: best case stable/faster with mostly correct icons
 ## Next move
 
 1. Push `testing-mesa-port`: done at head `d0ba852`.
-2. Wait for linux-mesa-ios `45600557745`; xnu `45596778651` is already green. Download artifacts and verify `SHA256SUMS` + Mach-O arm64. Ignore failed linux-mesa-ios `45596778741` and `45598612838`.
+2. CI/artifact verification is done: xnu `45596778651` green, linux-mesa-ios `45600557745` green, artifacts verified. Ignore failed linux-mesa-ios `45596778741` and `45598612838`.
 3. Ask explicit user approval before any V22 image build, push, swap, boot or active-image overwrite.
 4. If approved and device is back in Arch/Android: user runs sniffer first, then boots once with the V22 kernel/userland using the user-only command above.
 5. Analyse V22 log for `mode=list`, `mode=full`, `shared IOSurface`, `wrapped surface ... byte order`, `export failed`, `CREATE_BO failed`, respring, EAGL markers, frame/copy-out times, icons, wallpaper and visibly correct UI.
@@ -128,7 +133,9 @@ grep -n '0x505\|0x506\|glReadPixels' LOG
 ## Key files and artifacts
 
 - Active handoff: `/home/tom/s21xnu-linux-mesa/NOTES.md`.
-- V22 source commit: `f69330b` on `testing-mesa-port`.
+- V22 source commits: `f69330b` + build fixes `52010e9`, `2ddd129`; notes through `188f33d` on `testing-mesa-port`.
+- V22 CI: xnu `45596778651` success; linux-mesa-ios `45600557745` success. Failed attempts: `45596778741`, `45598612838`.
+- V22 artifacts: kernel `/home/tom/Downloads/kernel-v22/kernel.development.sweet` SHA-256 `1607a49d53ea12c26f5a7b8b28444f39a07774424fb8690beb648fed9c0da8cd`; userland `/home/tom/Downloads/ios-mesa-g78-v22/`.
 - V21 source commit: `c6cc351`; CI xnu `45577164674`, linux-mesa-ios `45577164974`.
 - V21 log: `/home/tom/Downloads/udp-sniff-20261125-093638.txt`.
 - V21 kernel artifact: `/home/tom/Downloads/kernel-v21/kernel.development.sweet`.
