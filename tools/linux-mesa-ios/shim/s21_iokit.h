@@ -53,11 +53,14 @@ void s21_iokit_log(const char *line);
 void s21_host_reset(void);
 unsigned s21_host_opens(void);
 unsigned s21_host_submits(void);
+unsigned s21_host_pair_calls(void);
 unsigned s21_host_flush_calls(void);
 uint32_t s21_host_last_slot(void);
 uint64_t s21_host_last_jc(void);
+uint64_t s21_host_last_second_jc(void);
 size_t s21_host_last_struct_len(void);
 uint32_t s21_host_last_nread(void);
+void s21_host_fail_submit_range(unsigned count);
 uint32_t s21_host_live_bos(void);
 uint32_t s21_host_last_map_va(void);
 void s21_host_fail_map(unsigned count);   /* fail the next count MAP_BO calls */

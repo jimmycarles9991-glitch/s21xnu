@@ -41,6 +41,8 @@
 #define S21_MAX_BO      512              /* V21: match the kernel's larger fBo table */
 #define S21_PRIME_BASE  0x50000000        /* synthetic dma-buf fds; never passed to dup()/close() */
 #define S21_SMALL_PAGES 16                /* kernel always flushes BOs this small */
+#define S21_RANGE_SMALL 1U                /* kSMSubmitRange: also flush BOs <= 16 pages */
+#define S21_RANGE_BOTH  ((1ULL << 62) | (1ULL << 63)) /* before and after both jobs */
 
 /* Measured on this phone with the Linux Panfrost port; see ROADMAP-linux-mesa-port.md. */
 #define P_GPU_ID        0x92020010ULL
@@ -76,6 +78,18 @@ struct s21_sync {
    uint64_t point;
 };
 
+/* Mesa's JM backend issues the tiler and fragment jobs of one batch back to
+ * back. Keep only that pair here until kSMSubmitRange can run both chains under
+ * one sm_lock section. Nothing is queued across a syncobj observation. */
+struct s21_pending_submit {
+   bool used;
+   uint32_t slot;
+   uint32_t ctx;
+   uint64_t jc;
+   unsigned nva;                          /* unique large BO VAs; the tail repeats them for write-after */
+   uint64_t va[2 * (S21_MAX_BO / 2)];
+};
+
 struct va_seg {
    uint64_t lo, hi;
    bool used;
@@ -109,6 +123,8 @@ static struct {
    uint64_t seq;
    int sync_fd[S21_MAX_BO];   /* fd -> syncobj handle + 1, 0 = unused */
    int prime_fd[S21_MAX_BO];  /* BO handle - 1 -> synthetic dma-buf fd, 0 = unused */
+   bool no_pair;              /* S21_NO_PAIR=1 keeps the old two-submit path */
+   struct s21_pending_submit pending;
 } C = {
    .lock = PTHREAD_MUTEX_INITIALIZER,
    .sync_fd = { 0 },
@@ -264,6 +280,121 @@ sync_signal_locked(uint32_t handle)
    C.sync[handle - 1].point++;
 }
 
+/* Send one job chain with the V22 selective-flush path, falling back to the
+ * older full-flush selector if this kernel does not understand selector 11. */
+static int
+send_list_submit(uint32_t slot, uint64_t jc, unsigned nread, const uint64_t *list)
+{
+    uint64_t in[4] = { slot, jc, 5000, nread }, out[1] = { 0 };
+    uint32_t n = 1;
+    int e = s21_iokit_mixed(S21_SUBMIT_LIST, in, 4, list,
+                            (size_t)nread * 2 * sizeof(uint64_t), out, &n);
+    bool fallback = false;
+    if (e) {
+       fallback = true;
+       n = 1;
+       out[0] = 0;
+       e = s21_iokit_scalar(S21_SUBMIT, in, 3, out, &n);
+    }
+    {
+       char line[192];
+       snprintf(line, sizeof(line),
+                "S21DRM: submit result slot=%u mode=%s ret=%d out=%llx",
+                slot, fallback ? "full" : "list", e,
+                (unsigned long long)(n ? out[0] : 0));
+       s21_iokit_log(line);
+    }
+    if (e)
+       return e;
+    if (n < 1 || out[0] != 0)
+       return -EIO;
+    return 0;
+}
+
+/* kSMSubmitRange already runs a slot-0 fragment chain immediately after a
+ * slot-1 chain inside one sm_lock section. Build its {va, flags} range list
+ * from the union of the two Mesa submits. If the union is too large for the
+ * kernel's 256-entry cap, let the caller replay them as two selector-11 calls
+ * instead of silently losing cache flushes. */
+static int
+send_pair_submit(const struct s21_pending_submit *p, uint64_t frag_jc,
+                 unsigned nread, const uint64_t *list, bool *transport_failed)
+{
+    uint64_t range[2 * (S21_MAX_BO / 2)];
+    unsigned nr = 0;
+    uint64_t in[5] = { p->slot, p->jc, 5000, S21_RANGE_SMALL, frag_jc };
+    uint64_t out[6] = { 0 };
+    uint32_t n = 6;
+
+    *transport_failed = false;
+    for (unsigned src = 0; src < 2; src++) {
+       unsigned count = src == 0 ? p->nva : nread;
+       const uint64_t *va = src == 0 ? p->va : list;
+       for (unsigned i = 0; i < count; i++) {
+          bool seen = false;
+          for (unsigned k = 0; k < nr; k++)
+             seen |= range[2 * k] == va[i];
+          if (seen)
+             continue;
+          if (nr == S21_MAX_BO / 2) {
+             s21_iokit_log("S21DRM: pair flush list overflow; replaying as two submits");
+             *transport_failed = true;
+             return -E2BIG;
+          }
+          range[2 * nr] = va[i];
+          range[2 * nr + 1] = S21_RANGE_BOTH;
+          nr++;
+       }
+    }
+
+    int e = s21_iokit_mixed(S21_SUBMIT_RANGE, in, 5, range, nr * 2 * sizeof(uint64_t),
+                            out, &n);
+    {
+       char line[192];
+       snprintf(line, sizeof(line),
+                "S21DRM: submit result slot=%u+0 mode=pair ret=%d out=%llx/%llx ranges=%u",
+                p->slot, e, (unsigned long long)(n ? out[0] : 0),
+                (unsigned long long)(n > 5 ? out[5] : 0), nr);
+       s21_iokit_log(line);
+    }
+    if (e) {
+       *transport_failed = true;
+       return e;
+    }
+    /* A nonzero status means the jobs already ran or faulted; never replay. */
+    if (n < 6 || out[0] != 0 || out[5] != 0)
+       return -EIO;
+    return 0;
+}
+
+/* Publish a deferred tiler job as its own submit when Mesa never sends the
+ * matching fragment job, or before any ioctl that could observe syncobj state
+ * or destroy/reuse the BOs it references. */
+static int
+drain_pending(void)
+{
+    for (;;) {
+       struct s21_pending_submit p;
+       pthread_mutex_lock(&C.lock);
+       if (!C.pending.used) {
+          pthread_mutex_unlock(&C.lock);
+          return 0;
+       }
+       p = C.pending;
+       memset(&C.pending, 0, sizeof(C.pending));
+       pthread_mutex_unlock(&C.lock);
+       {
+          char line[160];
+          snprintf(line, sizeof(line), "S21DRM: draining deferred slot=%u jc=%llx",
+                   p.slot, (unsigned long long)p.jc);
+          s21_iokit_log(line);
+       }
+       int e = send_list_submit(p.slot, p.jc, p.nva, p.va);
+       if (e)
+          return e;
+    }
+}
+
 static int
 get_param(const struct drm_panfrost_get_param *p, uint64_t *value)
 {
@@ -307,12 +438,16 @@ s21_drm_open(void)
 {
    pthread_mutex_lock(&C.lock);
    if (!C.up) {
+      const char *no_pair = getenv("S21_NO_PAIR");
+      C.no_pair = no_pair != NULL && no_pair[0] == '1';
       int e = s21_iokit_open();
       if (e) {
          pthread_mutex_unlock(&C.lock);
          return e;
       }
       C.up = true;
+      s21_iokit_log(C.no_pair ? "S21DRM: pair batching disabled by S21_NO_PAIR"
+                              : "S21DRM: pair batching enabled");
    }
    pthread_mutex_unlock(&C.lock);
    return S21_DRM_FD;
@@ -322,7 +457,8 @@ int
 drmClose(int fd)
 {
    (void)fd;
-   return 0;
+   /* Do not leave a tiler job stuck behind a present/teardown boundary. */
+   return drain_pending();
 }
 
 int
@@ -617,12 +753,166 @@ drmFreeDevices(drmDevicePtr devices[], int count)
    (void)devices; (void)count;
 }
 
+/* Copy the large BO VAs that kSMSubmitList must flush before and after one
+ * job. The first nread entries are read-before; the duplicate tail is
+ * write-after. Small BOs are always flushed by the kernel. */
+static int
+prepare_submit(const struct drm_panfrost_submit *s, uint32_t *slot,
+               uint64_t *list, unsigned *nread)
+{
+   if (s->bo_handle_count > S21_MAX_BO ||
+       (s->bo_handle_count != 0 && s->bo_handles == 0))
+      return -EINVAL;
+   const uint32_t *handles = (const uint32_t *)(uintptr_t)s->bo_handles;
+
+   *slot = (s->requirements & PANFROST_JD_REQ_FS) ? 0 : 1;
+   *nread = 0;
+   pthread_mutex_lock(&C.lock);
+   uint64_t seq = ++C.seq;
+   for (uint32_t i = 0; i < s->bo_handle_count; i++) {
+      struct s21_bo *b = bo_find_locked(handles[i]);
+      if (b == NULL)
+         continue;
+      b->seq = seq;
+      {
+         char line[192];
+         snprintf(line, sizeof(line), "S21DRM: submit bo h=%u va=%llx size=%llx",
+                  handles[i], (unsigned long long)b->va,
+                  (unsigned long long)b->size);
+         s21_iokit_log(line);
+      }
+      if (b->size <= S21_SMALL_PAGES * 4096 || *nread == S21_MAX_BO / 2)
+         continue;
+      bool seen = false;
+      for (unsigned k = 0; k < *nread; k++)
+         seen |= list[k] == b->va;
+      if (!seen)
+         list[(*nread)++] = b->va;
+   }
+   pthread_mutex_unlock(&C.lock);
+   for (unsigned i = 0; i < *nread; i++)
+      list[*nread + i] = list[i];
+
+   {
+      char line[192];
+      snprintf(line, sizeof(line),
+               "S21DRM: submit slot=%u jc=%llx req=%x nbo=%u list=%u(nread=%u)",
+               *slot, (unsigned long long)s->jc, s->requirements,
+               s->bo_handle_count, *nread * 2, *nread);
+      s21_iokit_log(line);
+   }
+   return 0;
+}
+
+static int
+defer_submit(const struct drm_panfrost_submit *s, uint32_t slot,
+             unsigned nread, const uint64_t *list)
+{
+   /* Only one pair is pending. If another tiler job arrives first, publish the
+    * old one as a standalone submit instead of losing or crossing jobs. */
+   for (;;) {
+      pthread_mutex_lock(&C.lock);
+      if (!C.pending.used)
+         break;
+      struct s21_pending_submit p = C.pending;
+      memset(&C.pending, 0, sizeof(C.pending));
+      pthread_mutex_unlock(&C.lock);
+      int e = send_list_submit(p.slot, p.jc, p.nva, p.va);
+      if (e)
+         return e;
+   }
+   C.pending.used = true;
+   C.pending.slot = slot;
+   C.pending.ctx = s->jm_ctx_handle;
+   C.pending.jc = s->jc;
+   C.pending.nva = nread;
+   memcpy(C.pending.va, list, (size_t)nread * 2 * sizeof(uint64_t));
+   pthread_mutex_unlock(&C.lock);
+   {
+      char line[160];
+      snprintf(line, sizeof(line), "S21DRM: submit deferred slot=%u jc=%llx ctx=%u",
+               slot, (unsigned long long)s->jc, s->jm_ctx_handle);
+      s21_iokit_log(line);
+   }
+   return 0;
+}
+
+static int
+panfrost_submit_ioctl(struct drm_panfrost_submit *s)
+{
+   uint64_t list[2 * (S21_MAX_BO / 2)];
+   unsigned nread = 0;
+   uint32_t slot = 1;
+   int e = prepare_submit(s, &slot, list, &nread);
+   if (e)
+      return e;
+   bool fs = (s->requirements & PANFROST_JD_REQ_FS) != 0;
+
+   /* Mesa's jm_submit_batch() holds dev->submit_lock across these two ioctls.
+    * Only defer the first half when it has no completion to publish and no
+    * explicit dependencies; the fragment half owns the out_sync. */
+   if (!C.no_pair && slot == 1 && !fs && s->out_sync == 0 && s->in_sync_count == 0)
+      return defer_submit(s, slot, nread, list);
+
+   if (!C.no_pair && slot == 0 && fs && s->in_sync_count == 0) {
+      struct s21_pending_submit p;
+      bool have = false;
+      pthread_mutex_lock(&C.lock);
+      if (C.pending.used) {
+         p = C.pending;
+         memset(&C.pending, 0, sizeof(C.pending));
+         have = true;
+      }
+      pthread_mutex_unlock(&C.lock);
+      if (have) {
+         if (p.ctx == s->jm_ctx_handle) {
+            bool transport_failed = false;
+            e = send_pair_submit(&p, s->jc, nread, list, &transport_failed);
+            if (e == 0) {
+               pthread_mutex_lock(&C.lock);
+               sync_signal_locked(s->out_sync);
+               pthread_mutex_unlock(&C.lock);
+               return 0;
+            }
+            /* Nonzero job status means the GPU already saw the work. Only a
+             * rejected selector is safe to replay as two separate submits. */
+            if (!transport_failed)
+               return e;
+         }
+         if (p.slot != slot || p.jc != s->jc) {
+            e = send_list_submit(p.slot, p.jc, p.nva, p.va);
+            if (e)
+               return e;
+         }
+      }
+   }
+
+   e = drain_pending();
+   if (e)
+      return e;
+   e = send_list_submit(slot, s->jc, nread, list);
+   if (e)
+      return e;
+   pthread_mutex_lock(&C.lock);
+   sync_signal_locked(s->out_sync);
+   pthread_mutex_unlock(&C.lock);
+   return 0;
+}
+
 static int
 drmIoctlImpl(int fd, unsigned long request, void *arg)
 {
    (void)fd;
    if (arg == NULL)
       return -EINVAL;
+
+   /* A deferred tiler job must be visible before any query, reset, transfer,
+    * wait, BO destroy or other state change. SUBMIT itself handles pairing. */
+   if (request != DRM_IOCTL_PANFROST_SUBMIT) {
+      int e = drain_pending();
+      if (e)
+         return e;
+   }
 
    if (request == DRM_IOCTL_PANFROST_GET_PARAM) {
       struct drm_panfrost_get_param *p = arg;
@@ -762,89 +1052,8 @@ drmIoctlImpl(int fd, unsigned long request, void *arg)
       return e;
    }
 
-   if (request == DRM_IOCTL_PANFROST_SUBMIT) {
-      struct drm_panfrost_submit *s = arg;
-      uint32_t slot = (s->requirements & PANFROST_JD_REQ_FS) ? 0 : 1;
-      uint64_t list[2 * (S21_MAX_BO / 2)];
-      unsigned nread = 0;
-
-      if (s->bo_handle_count > S21_MAX_BO)
-         return -EINVAL;
-      const uint32_t *handles = (const uint32_t *)(uintptr_t)s->bo_handles;
-
-      /* kSMSubmitList flushes BOs whose VA is in the structure: the first
-       * nread entries before the job, the rest after it. Duplicate each large
-       * BO into both halves; an imported IOSurface may be read from and then
-       * written by the same job. BOs of <= 16 pages are always flushed by the
-       * kernel, so including them here would only add redundant work. */
-      pthread_mutex_lock(&C.lock);
-      uint64_t seq = ++C.seq;
-      for (uint32_t i = 0; i < s->bo_handle_count; i++) {
-         struct s21_bo *b = bo_find_locked(handles[i]);
-         if (b == NULL)
-            continue;
-         b->seq = seq;
-         {
-            char line[192];
-            snprintf(line, sizeof(line),
-                     "S21DRM: submit bo h=%u va=%llx size=%llx",
-                     handles[i], (unsigned long long)b->va,
-                     (unsigned long long)b->size);
-            s21_iokit_log(line);
-         }
-         if (b->size <= S21_SMALL_PAGES * 4096 || nread == S21_MAX_BO / 2)
-            continue;
-         bool seen = false;
-         for (unsigned k = 0; k < nread; k++)
-            seen |= list[k] == b->va;
-         if (!seen)
-            list[nread++] = b->va;
-      }
-      for (unsigned i = 0; i < nread; i++)
-         list[nread + i] = list[i];
-      pthread_mutex_unlock(&C.lock);
-
-      {
-         char line[192];
-         snprintf(line, sizeof(line),
-                  "S21DRM: submit slot=%u jc=%llx req=%x nbo=%u list=%u(nread=%u)",
-                  slot, (unsigned long long)s->jc, s->requirements,
-                  s->bo_handle_count, nread * 2, nread);
-         s21_iokit_log(line);
-      }
-
-      uint64_t in[4] = { slot, s->jc, 5000, nread }, out[1] = { 0 };
-      uint32_t n = 1;
-      int e = s21_iokit_mixed(S21_SUBMIT_LIST, in, 4, list,
-                              (size_t)(nread * 2) * sizeof(uint64_t),
-                              out, &n);
-      bool fallback = false;
-      if (e) {
-         /* Keep an older kernel usable: the full-flush selector is slower but
-          * correct. The log says which path actually ran. */
-         fallback = true;
-         n = 1;
-         out[0] = 0;
-         e = s21_iokit_scalar(S21_SUBMIT, in, 3, out, &n);
-      }
-      {
-         char line[192];
-         snprintf(line, sizeof(line),
-                  "S21DRM: submit result slot=%u mode=%s ret=%d out=%llx",
-                  slot, fallback ? "full" : "list", e,
-                  (unsigned long long)(n ? out[0] : 0));
-         s21_iokit_log(line);
-      }
-      if (e)
-         return e;
-      if (n < 1 || out[0] != 0)
-         return -EIO;
-
-      pthread_mutex_lock(&C.lock);
-      sync_signal_locked(s->out_sync);
-      pthread_mutex_unlock(&C.lock);
-      return 0;
-   }
+   if (request == DRM_IOCTL_PANFROST_SUBMIT)
+      return panfrost_submit_ioctl(arg);
 
    if (request == DRM_IOCTL_PANFROST_SET_LABEL_BO) {
       struct drm_panfrost_set_label_bo *l = arg;
@@ -982,6 +1191,9 @@ int
 drmCloseBufferHandle(int fd, uint32_t handle)
 {
    (void)fd;
+   int e = drain_pending();
+   if (e)
+      return e;
    pthread_mutex_lock(&C.lock);
    struct s21_bo *b = bo_find_locked(handle);
    if (b == NULL) {
@@ -1088,6 +1300,9 @@ s21_drm_import_user(uint64_t uva, uint64_t len, uint32_t *handle, uint64_t *gpu_
    if (uva == 0 || len == 0 || (uva & 0xfff) || (len & 0xfff) ||
        len > S21_CHUNK_MAX)
       return -EINVAL;
+   int drain = drain_pending();
+   if (drain)
+      return drain;
    pthread_mutex_lock(&C.lock);
    /* V21: imports consume the same global kernel budget as CREATE_BO. The
     * old shim counted only created BOs, so backboardd could overcommit. */

@@ -19,13 +19,16 @@ static struct {
    struct host_bo bo[HOST_MAX_BOS];
    unsigned opens;
    unsigned submits;
+   unsigned pairs;
    unsigned flushes;
    uint32_t last_slot;
    uint64_t last_jc;
+   uint64_t second_jc;
    size_t last_struct_len;
    uint32_t last_nread;
    uint32_t last_map_va;
    unsigned fail_map;
+   unsigned fail_range;
 } H;
 
 void
@@ -53,8 +56,11 @@ uint32_t s21_host_live_bos(void)
       n += H.bo[i].used != 0;
    return n;
 }
+unsigned s21_host_pair_calls(void) { return H.pairs; }
+uint64_t s21_host_last_second_jc(void) { return H.second_jc; }
 uint32_t s21_host_last_map_va(void) { return H.last_map_va; }
 void s21_host_fail_map(unsigned count) { H.fail_map = count; }
+void s21_host_fail_submit_range(unsigned count) { H.fail_range = count; }
 
 int
 s21_iokit_open(void)
@@ -193,6 +199,28 @@ s21_iokit_mixed(uint32_t selector, const uint64_t *scalar_in,
                 uint32_t scalar_count, const void *struct_in,
                 size_t struct_len, uint64_t *out, uint32_t *out_count)
 {
+   if (selector == S21_SUBMIT_RANGE) {
+      if (scalar_in == NULL || scalar_count < 5 || struct_len % 16 != 0)
+         return -EINVAL;
+      if (H.fail_range) {
+         H.fail_range--;
+         return -ENOTSUP;
+      }
+      H.pairs++;
+      H.submits++;
+      H.last_slot = (uint32_t)scalar_in[0];
+      H.last_jc = scalar_in[1];
+      H.second_jc = scalar_in[4];
+      H.last_struct_len = struct_len;
+      H.last_nread = (uint32_t)(struct_len / 16);
+      H.flushes++;       /* one selective pre/post flush pass for both jobs */
+      if (out != NULL && out_count != NULL && *out_count >= 6) {
+         out[0] = 0;
+         out[5] = 0;
+         *out_count = 6;
+      }
+      return 0;
+   }
    if (selector == S21_SUBMIT_LIST) {
       if (scalar_in == NULL || scalar_count < 4 || struct_len % 8 != 0)
          return -EINVAL;

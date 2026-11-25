@@ -297,6 +297,131 @@ test_submit_list_and_prime(int fd)
    free(mem);
 }
 
+static void
+test_submit_pair(int fd)
+{
+   /* Mesa's tiler + fragment pair must become one kSMSubmitRange call. */
+   uint64_t tiler_va = 0, frag_va = 0;
+   uint32_t tiler_bo = create_bo(fd, 0x4000, 0, &tiler_va);
+   uint32_t frag_bo = create_bo(fd, 0x4000, 0, &frag_va);
+   uint32_t sync = 0;
+   assert(drmSyncobjCreate(fd, 0, &sync) == 0);
+
+   uint32_t tiler_handles[1] = { tiler_bo };
+   uint32_t frag_handles[1] = { frag_bo };
+   struct drm_panfrost_submit tiler = {
+      .jc = tiler_va,
+      .bo_handles = (uint64_t)(uintptr_t)tiler_handles,
+      .bo_handle_count = 1,
+   };
+   struct drm_panfrost_submit frag = {
+      .jc = frag_va,
+      .out_sync = sync,
+      .bo_handles = (uint64_t)(uintptr_t)frag_handles,
+      .bo_handle_count = 1,
+      .requirements = PANFROST_JD_REQ_FS,
+   };
+
+   unsigned submits = s21_host_submits();
+   unsigned pairs = s21_host_pair_calls();
+   assert(drmIoctl(fd, DRM_IOCTL_PANFROST_SUBMIT, &tiler) == 0);
+   assert(s21_host_submits() == submits);
+   assert(s21_host_pair_calls() == pairs);
+
+   assert(drmIoctl(fd, DRM_IOCTL_PANFROST_SUBMIT, &frag) == 0);
+   assert(s21_host_submits() == submits + 1);
+   assert(s21_host_pair_calls() == pairs + 1);
+   assert(s21_host_last_slot() == 1);
+   assert(s21_host_last_jc() == tiler_va);
+   assert(s21_host_last_second_jc() == frag_va);
+   assert(s21_host_last_struct_len() == 0);   /* both BOs are small */
+
+   uint32_t first = 99;
+   assert(drmSyncobjWait(fd, &sync, 1, 0, 0, &first) == 0);
+   assert(first == 0);
+
+   assert(drmSyncobjDestroy(fd, sync) == 0);
+   assert(drmCloseBufferHandle(fd, tiler_bo) == 0);
+   assert(drmCloseBufferHandle(fd, frag_bo) == 0);
+}
+
+static void
+test_submit_pair_large_flush(int fd)
+{
+   /* Both halves reference the same large BO: selector 12 must receive one
+    * {va, before|after} entry, not two list copies from kSMSubmitList. */
+   uint64_t va = 0;
+   uint32_t bo = create_bo(fd, 128 * 1024, 0, &va);
+   uint32_t sync = 0;
+   assert(drmSyncobjCreate(fd, 0, &sync) == 0);
+   uint32_t handles[1] = { bo };
+   struct drm_panfrost_submit tiler = {
+      .jc = va,
+      .bo_handles = (uint64_t)(uintptr_t)handles,
+      .bo_handle_count = 1,
+   };
+   struct drm_panfrost_submit frag = {
+      .jc = va + 0x1000,
+      .out_sync = sync,
+      .bo_handles = (uint64_t)(uintptr_t)handles,
+      .bo_handle_count = 1,
+      .requirements = PANFROST_JD_REQ_FS,
+   };
+   assert(drmIoctl(fd, DRM_IOCTL_PANFROST_SUBMIT, &tiler) == 0);
+   assert(drmIoctl(fd, DRM_IOCTL_PANFROST_SUBMIT, &frag) == 0);
+   assert(s21_host_last_struct_len() == 2 * sizeof(uint64_t));
+   assert(s21_host_last_nread() == 1);
+   assert(s21_host_last_second_jc() == va + 0x1000);
+   assert(drmSyncobjDestroy(fd, sync) == 0);
+   assert(drmCloseBufferHandle(fd, bo) == 0);
+}
+
+static void
+test_submit_pair_fallback(int fd)
+{
+   /* A kernel that rejects selector 12 must get the old two-submit path. */
+   uint64_t tiler_va = 0, frag_va = 0;
+   uint32_t tiler_bo = create_bo(fd, 0x4000, 0, &tiler_va);
+   uint32_t frag_bo = create_bo(fd, 0x4000, 0, &frag_va);
+   uint32_t sync = 0;
+   assert(drmSyncobjCreate(fd, 0, &sync) == 0);
+
+   uint32_t tiler_handles[1] = { tiler_bo };
+   uint32_t frag_handles[1] = { frag_bo };
+   struct drm_panfrost_submit tiler = {
+      .jc = tiler_va,
+      .bo_handles = (uint64_t)(uintptr_t)tiler_handles,
+      .bo_handle_count = 1,
+   };
+   struct drm_panfrost_submit frag = {
+      .jc = frag_va,
+      .out_sync = sync,
+      .bo_handles = (uint64_t)(uintptr_t)frag_handles,
+      .bo_handle_count = 1,
+      .requirements = PANFROST_JD_REQ_FS,
+   };
+
+   s21_host_fail_submit_range(1);
+   unsigned submits = s21_host_submits();
+   unsigned pairs = s21_host_pair_calls();
+   unsigned flushes = s21_host_flush_calls();
+   assert(drmIoctl(fd, DRM_IOCTL_PANFROST_SUBMIT, &tiler) == 0);
+   assert(drmIoctl(fd, DRM_IOCTL_PANFROST_SUBMIT, &frag) == 0);
+   assert(s21_host_submits() == submits + 2);
+   assert(s21_host_pair_calls() == pairs);
+   assert(s21_host_flush_calls() == flushes + 2);
+   assert(s21_host_last_slot() == 0);
+   assert(s21_host_last_jc() == frag_va);
+
+   uint32_t first = 99;
+   assert(drmSyncobjWait(fd, &sync, 1, 0, 0, &first) == 0);
+   assert(first == 0);
+
+   assert(drmSyncobjDestroy(fd, sync) == 0);
+   assert(drmCloseBufferHandle(fd, tiler_bo) == 0);
+   assert(drmCloseBufferHandle(fd, frag_bo) == 0);
+}
+
 int
 main(void)
 {
@@ -316,6 +441,9 @@ main(void)
    test_syncobj_import_v17(fd);
    test_import_user(fd);
    test_submit_list_and_prime(fd);
+   test_submit_pair(fd);
+   test_submit_pair_large_flush(fd);
+   test_submit_pair_fallback(fd);
 
    drmVersionPtr v = drmGetVersion(fd);
    assert(v != NULL && v->name != NULL && strcmp(v->name, "panfrost") == 0);

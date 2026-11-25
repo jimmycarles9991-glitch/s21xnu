@@ -109,6 +109,10 @@ typedef GLDEBUGPROC GLDEBUGPROCKHR;
 #define GL_PACK_ALIGNMENT               0x0d05
 #define GL_TEXTURE_2D                   0x0de1
 #define GL_UNSIGNED_BYTE                0x1401
+#define GL_RED                          0x1903
+#define GL_GREEN                        0x1904
+#define GL_BLUE                         0x1905
+#define GL_ALPHA                        0x1906
 #define GL_RGBA                         0x1908
 #define GL_VENDOR                       0x1f00
 #define GL_RENDERER                     0x1f01
@@ -119,6 +123,11 @@ typedef GLDEBUGPROC GLDEBUGPROCKHR;
 #define GL_INFO_LOG_LENGTH              0x8b84
 #define GL_COMPILE_STATUS               0x8b81
 #define GL_LINK_STATUS                  0x8b82
+#define GL_TEXTURE_SWIZZLE_R            0x8e42
+#define GL_TEXTURE_SWIZZLE_G            0x8e43
+#define GL_TEXTURE_SWIZZLE_B            0x8e44
+#define GL_TEXTURE_SWIZZLE_A            0x8e45
+#define GL_TEXTURE_SWIZZLE_RGBA         0x8e46
 #define GL_SHADING_LANGUAGE_VERSION     0x8b8c
 #define GL_FRAGMENT_SHADER              0x8b30
 #define GL_TEXTURE                      0x1702
@@ -226,7 +235,8 @@ struct group_texture {
 	GLfloat colours[20];            /* ... and that layer's colour matrix */
 };
 static int group_vibrant_on = 1;        /* boot-arg glgroup=0 */
-static int icon_rgb_fix = 1;            /* boot-arg glcolorfix=0 turns off both V28 variants */
+static int icon_rgb_fix = 1;            /* boot-arg glcolorfix=0 turns off both V29 variants */
+static int swizzle_identity = 0;        /* boot-arg glswizzle=1: identity swizzle on EAGL-owned textures */
 static unsigned group_covered, group_laid, group_flattened;    /* (glframes=1) this frame's */
 
 /* A texture that stands for an IOSurface. */
@@ -326,7 +336,8 @@ struct eagl {
 	unsigned frames, shaders, programs, errors, shared, refused;
 	uint64_t all_calls, all_draws, all_triangles, readback_us, wait_us, attach_us, flush_us, frame_us;
 	unsigned most_calls, most_triangles;
-	const char *sources[256];       /* the text of the shaders being made, by name (modulo this) */
+	const char *sources[256];       /* the text of the shaders as Mesa compiles them, by name (modulo this) */
+	const char *raw_sources[256];    /* V29: CoreAnimation's words before shader_text() moved #extension lines */
 	bool fragment[256];             /* ... and which of the two kinds each is */
 	/* V28: which shaders CoreAnimation attached to each program, and our variants of them */
 	GLuint program_vertex[256], program_fragment[256];
@@ -1526,7 +1537,7 @@ drawing(struct eagl *e)
 			e->draw_variant = e->square_variant[e->program % 256];
 		}
 		if (told_small++ < 80) {
-			say("hakios-gl: V28: small picture %d x %d (surface %u, texture %u) drawn by program %u, fragment shader %u "
+			say("hakios-gl: V29: small picture %d x %d (surface %u, texture %u) drawn by program %u, fragment shader %u "
 			    "into framebuffer %u, frame %u%s%s\n", image->width, image->height, IOSurfaceGetID(image->surface),
 			    e->bound[0], e->program, e->program_fragment[e->program % 256], e->framebuffer, e->frames + 1,
 			    e->draw_variant != 0 ? ", unmasked variant" : "", e->draw_variant == 0 && e->square_variant[e->program % 256] != 0 ?
@@ -3549,6 +3560,42 @@ my_glActiveTexture(void *context, GLenum unit)
 	EAGL_LEAVE(e, 0xab8);
 }
 
+/* V29: CoreAnimation's sampler swizzles are applied after our CPU upload and
+ * after the plain texture program samples it. V28 did not record them. Log the
+ * first few, and with glswizzle=1 restore identity only on textures that came
+ * from an EAGL IOSurface, never on CoreAnimation's own private textures. */
+static void
+my_glTexParameteri(void *context, GLenum target, GLenum pname, GLint param)
+{
+	static unsigned said;
+	struct eagl *e = context;
+	GLint given = param;
+	GLuint texture = target == GL_TEXTURE_2D && e->unit < 8 ? e->bound[e->unit] : 0;
+	struct image *image = texture != 0 ? image_of(e, texture) : NULL;
+	bool single = pname >= GL_TEXTURE_SWIZZLE_R && pname <= GL_TEXTURE_SWIZZLE_A;
+
+	EAGL_ENTER(e, 0x988);
+	if ((single || pname == GL_TEXTURE_SWIZZLE_RGBA) && said++ < 32) {
+		say("hakios-gl: V29: swizzle target=%#x pname=%#x param=%#x texture=%u eagl=%d\n",
+		    target, pname, param, texture, image != NULL);
+	}
+	if (swizzle_identity && image != NULL && single) {
+		switch (pname) {
+		case GL_TEXTURE_SWIZZLE_R: param = GL_RED; break;
+		case GL_TEXTURE_SWIZZLE_G: param = GL_GREEN; break;
+		case GL_TEXTURE_SWIZZLE_B: param = GL_BLUE; break;
+		case GL_TEXTURE_SWIZZLE_A: param = GL_ALPHA; break;
+		default: break;
+		}
+		if (param != given && said <= 33) {
+			say("hakios-gl: V29: identity swizzle pname=%#x texture=%u (%#x -> %#x)\n",
+			    pname, texture, given, param);
+		}
+	}
+	glTexParameteri(target, pname, param);
+	EAGL_LEAVE(e, 0x988);
+}
+
 static void
 my_glUniformMatrix4fv(void *context, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
 {
@@ -4183,8 +4230,28 @@ my_glCreateShader(void *context, GLenum type)
 	return shader;
 }
 
+/* V29: keep CoreAnimation's source before shader_text() hoists and comments
+ * out #extension lines. Variants must be made from this raw copy, or an
+ * inout/framebuffer-fetch shader is wrapped twice without its extension. */
+static char *
+concat_source(const GLchar *const *strings, GLsizei count, const GLint *lengths)
+{
+	size_t size = 1;
+	char *text;
+
+	for (GLsizei i = 0; i < count; i++) {
+		size += lengths != NULL && lengths[i] >= 0 ? (size_t)lengths[i] : strlen(strings[i]);
+	}
+	if ((text = calloc(1, size)) == NULL)
+		return NULL;
+	for (GLsizei i = 0; i < count; i++) {
+		strncat(text, strings[i], lengths != NULL && lengths[i] >= 0 ? (size_t)lengths[i] : strlen(strings[i]));
+	}
+	return text;
+}
+
 /*
- * The words CoreAnimation writes and the words GLSL 3.00 wants, for one shader. V28 uses this
+ * The words CoreAnimation writes and the words GLSL 3.00 wants, for one shader. V29 uses this
  * for its own variants as well as for CoreAnimation's shaders, so that a modified shader goes
  * through exactly the same extensions, precision and framebuffer-fetch treatment.
  */
@@ -4243,13 +4310,19 @@ my_glShaderSource(void *context, GLuint shader, GLsizei count, const GLchar *con
 	char *text;
 
 	EAGL_ENTER(e, 0x12a0);
-	if ((text = shader_text(e, shader, strings, count, lengths, parts)) == NULL) {
-		glShaderSource(shader, count, strings, lengths);
-		return;
+	{
+		char *raw = concat_source(strings, count, lengths);
+
+		free((void *)e->raw_sources[shader % 256]);
+		e->raw_sources[shader % 256] = raw;
 	}
-	free((void *)e->sources[shader % 256]);
-	e->sources[shader % 256] = text;
-	glShaderSource(shader, 6, (const GLchar *const[6]){ parts[0], parts[5], parts[1], parts[2], parts[3], parts[4] }, NULL);
+	if ((text = shader_text(e, shader, strings, count, lengths, parts)) != NULL) {
+		free((void *)e->sources[shader % 256]);
+		e->sources[shader % 256] = text;
+		glShaderSource(shader, 6, (const GLchar *const[6]){ parts[0], parts[5], parts[1], parts[2], parts[3], parts[4] }, NULL);
+	} else {
+		glShaderSource(shader, count, strings, lengths);
+	}
 	EAGL_LEAVE(e, 0x12a0);
 }
 
@@ -4338,7 +4411,10 @@ alpha_rgb_source(const char *source)
 static char *
 square_plain_source(const char *source)
 {
-	if (strstr(source, "squareImage") == NULL) {
+	/* V28 required a literal squareImage() function. Program 29's fragment
+	 * shader 28 has the same mask multiplication but no such function; it is
+	 * the one that draws the small pictures from frame 25 onward. */
+	if (strstr(source, "gl_FragData[0] = color * s0 * s1.a;") == NULL) {
 		return NULL;
 	}
 	return replace_assignment(source, "gl_FragData[0] = color * s0 * s1.a;", "gl_FragData[0] = color * s0;");
@@ -4427,7 +4503,7 @@ make_variant(struct eagl *e, GLuint program, GLuint vertex, GLuint fragment, cha
 	glGetShaderiv(shader, GL_COMPILE_STATUS, &good);
 	if (!good) {
 		glGetShaderInfoLog(shader, sizeof(said), NULL, said);
-		say("hakios-gl: V28: %s fragment does not compile: %s\n", what, said);
+		say("hakios-gl: V29: %s fragment does not compile: %s\n", what, said);
 		glDeleteShader(shader);
 		return 0;
 	}
@@ -4445,12 +4521,12 @@ make_variant(struct eagl *e, GLuint program, GLuint vertex, GLuint fragment, cha
 	glGetProgramiv(variant, GL_LINK_STATUS, &good);
 	if (!good) {
 		glGetProgramInfoLog(variant, sizeof(said), NULL, said);
-		say("hakios-gl: V28: %s program does not link: %s\n", what, said);
+		say("hakios-gl: V29: %s program does not link: %s\n", what, said);
 		glDeleteProgram(variant);
 		glDeleteShader(shader);
 		return 0;
 	}
-	say("hakios-gl: V28: program %u: %s program %u (shaders %u/%u, fragment shader %u)\n", program, what, variant,
+	say("hakios-gl: V29: program %u: %s program %u (shaders %u/%u, fragment shader %u)\n", program, what, variant,
 	    vertex, fragment, shader);
 	return variant;
 }
@@ -4473,14 +4549,20 @@ program_variants(struct eagl *e, GLuint program, GLuint *shaders, GLsizei count)
 			vertex = shaders[i];
 		}
 	}
-	say("hakios-gl: V28: program %u: %d attached shaders [%s]; vertex %u, fragment %u\n", program, count, ids, vertex,
+	say("hakios-gl: V29: program %u: %d attached shaders [%s]; vertex %u, fragment %u\n", program, count, ids, vertex,
 	    fragment);
 	if (program >= 256) {
 		return;
 	}
 	e->program_vertex[program % 256] = vertex;
 	e->program_fragment[program % 256] = fragment;
-	if (!icon_rgb_fix || fragment == 0 || (source = e->sources[fragment % 256]) == NULL) {
+	/* Build variants from CoreAnimation's raw words. Feeding shader_text()'s
+	 * already-rewritten text back in made gl_LastFragData shaders lose their
+	 * #extension line and fail with "input and output" in V28. */
+	source = fragment != 0 ? e->raw_sources[fragment % 256] : NULL;
+	if (source == NULL && fragment != 0)
+		source = e->sources[fragment % 256];
+	if (!icon_rgb_fix || source == NULL) {
 		return;
 	}
 	if (e->alpha_variant[program % 256] == 0) {
@@ -4494,7 +4576,7 @@ program_variants(struct eagl *e, GLuint program, GLuint *shaders, GLsizei count)
 		char *changed = square_plain_source(source);
 
 		if (changed != NULL) {
-			e->square_variant[program % 256] = make_variant(e, program, vertex, fragment, changed, "no squareImage mask");
+			e->square_variant[program % 256] = make_variant(e, program, vertex, fragment, changed, "no alpha mask");
 		}
 	}
 }
@@ -4511,7 +4593,7 @@ draw_variant_begin(struct eagl *e)
 	glUseProgram(variant);
 	copy_uniforms(e->program, variant);
 	if (said[variant % 256]++ == 0) {
-		say("hakios-gl: V28: drawing program %u with variant %u\n", e->program, variant);
+		say("hakios-gl: V29: drawing program %u with variant %u\n", e->program, variant);
 	}
 	return variant;
 }
@@ -4559,6 +4641,10 @@ my_glDeleteProgram(void *context, GLuint name)
 		glDeleteProgram(name);
 	} else {
 		glDeleteShader(name);
+		free((void *)e->sources[name % 256]);
+		free((void *)e->raw_sources[name % 256]);
+		e->sources[name % 256] = NULL;
+		e->raw_sources[name % 256] = NULL;
 	}
 	EAGL_LEAVE(e, 0x1280);
 }
@@ -4925,8 +5011,9 @@ install(void)
 		all_shaders = strstr(arguments, "glshaders=1") != NULL;
 		census_on = strstr(arguments, "glcensus=1") != NULL;
 		frame_lines = strstr(arguments, "glframes=1") != NULL;
-		say("hakios-gl: V28 diagnostics: glshaders=%d glcensus=%d glframes=%d glcolorfix=%d\n", all_shaders, census_on,
-		    frame_lines, icon_rgb_fix);
+		swizzle_identity = strstr(arguments, "glswizzle=1") != NULL;
+		say("hakios-gl: V29 diagnostics: glshaders=%d glcensus=%d glframes=%d glcolorfix=%d glswizzle=%d\n",
+		    all_shaders, census_on, frame_lines, icon_rgb_fix, swizzle_identity);
 		latency_lines = strstr(arguments, "touch_lat=1") != NULL;
 		if ((argument = strstr(arguments, "glslow=")) != NULL) {
 			slow_calls_us = strtoull(argument + 7, NULL, 10);
