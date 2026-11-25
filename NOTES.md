@@ -38,7 +38,7 @@ Updated 2026-11-25. Keep this file short: it is the active handoff for the next 
   - First linux-mesa-ios run `45596778741` on head `d0ba852`: **failed**; `gl_s21.c` used `<IOSurface/IOSurface.h>`, which the iOS SDK exposes as `<IOSurface/IOSurfaceRef.h>` (same header `eagl.c` already uses).
   - Fix commit `52010e9`; linux-mesa-ios rerun `45598612838` also **failed**: `gl_s21.c` could not find the fake `<xf86drm.h>` because the EAGL compile lacked `-I$HERE/include`.
   - Fix commit `2ddd129` adds that include path; linux-mesa-ios `45600557745` on head `2ddd129`: **success**, completed `2026-11-25T11:11:10Z`. Host test passed inside CI.
-- V22 host image built by the user; push/swap executed by the user with typed `SWAP_V22`. Active root is now V22. **No V22 boot has happened yet.** Ask before boot.
+- V22 host image built by the user; push/swap executed by the user with typed `SWAP_V22`. Active root is now V22. User approved V22 boot on 2026-11-25; **no V22 boot has happened yet**. User must run sniffer and boot; assistant must not boot.
 - V22 image `/home/tom/ios-sweet/build/iosroot-hojun-816f870-eagl-v22.img`: SHA-256 `8cf044022932213676245e5320533f6c74779a5edf6aae760f241e650646320b`, 17,179,869,184 B, `root:root 644`; pre/post `fsck.hfsplus` OK.
 - Device swap: rsync 17,179,869,184 B at 23.59 MB/s in 11m34s; stage hash verified; F2FS GC 9982 → 10051 free segments; sequential `dd` in 183 s at 93.9 MB/s; printed `ACTIVE_V22_READY`.
 - Independent read-only recheck: active SHA-256 `8cf044022932213676245e5320533f6c74779a5edf6aae760f241e650646320b`, `root:root 644`, `extents=3797`, `free_segments=10050`, tunables `2048`/`0`.
@@ -98,8 +98,8 @@ Expected outcome is uncertain: best case stable/faster with mostly correct icons
 ## Next move
 
 1. Source, CI, artifacts, host image and user-approved push/swap are complete. Ignore failed linux-mesa-ios runs `45596778741` and `45598612838`.
-2. Ask explicit user approval before booting. V22 is active on disk, but it has not been booted.
-3. With approval, user runs sniffer first, then boots once with V22:
+2. User approved boot on 2026-11-25. V22 is active on disk, but it has not been booted.
+3. User runs sniffer first, then boots once with V22:
    - `cd /home/tom/Downloads && sudo ./sweet-usbnet-sniff.sh`
    - `cd /home/tom/Downloads && KERNEL_SRC=/home/tom/Downloads/kernel-v22/kernel.development.sweet EXTRA="launchd_unsecure_cache=1" SWEETMETAL=1 GPUCOMP=1 ./boot-hojun-gpu.sh`
 4. Analyse V22 log for `mode=list`, `mode=full`, `shared IOSurface`, `wrapped surface ... byte order`, `export failed`, `CREATE_BO failed`, respring, EAGL markers, frame/copy-out times, icons, wallpaper and visibly correct UI.
@@ -108,7 +108,7 @@ Expected outcome is uncertain: best case stable/faster with mostly correct icons
 
 - Observed 2026-11-25 after the user-run push/swap: device was in EndeavourOS with SSH; active `/mnt/android-data/linux/iosroot.img` is V22, SHA-256 `8cf044022932213676245e5320533f6c74779a5edf6aae760f241e650646320b`, 17,179,869,184 B, `root:root 644`; `extents=3797`, `free_segments=10050`, tunables `gc_pin_file_thresh=2048`/`gc_urgent=0`; `/mnt/android-data` had 30G free at 73% use.
 - V22 kernel file: `/home/tom/Downloads/kernel-v22/kernel.development.sweet`, SHA-256 `1607a49d53ea12c26f5a7b8b28444f39a07774424fb8690beb648fed9c0da8cd`; not booted yet. V21 kernel SHA-256 `0bc9d5c4c73d146efaa362c363c48cdcdfae4270b244b7d0ee53406a005c8fac` also has selector 11; prefer V22 for traceability.
-- No kernel has been flashed. The active image was overwritten only after the user typed `SWAP_V22`; Android, bootloaders, recovery, modem, persist and backups were untouched.
+- No kernel has been flashed. V22 boot is approved but not executed. The active image was overwritten only after the user typed `SWAP_V22`; Android, bootloaders, recovery, modem, persist and backups were untouched.
 - No assistant boot/kexec/flash/partition change has happened.
 
 ## Short version history
@@ -119,7 +119,7 @@ Expected outcome is uncertain: best case stable/faster with mostly correct icons
 - V19: colour fix; normal colours except icons, but BO pool exhaustion and respring.
 - V20: kernel page-table reclaim + MAP_BO rollback; no observed reclaim path, 183 `CREATE_BO failed`, respring, slow.
 - V21: BO/VA limits, Mesa NULL-deref fix, single-readback copy-out; zero `CREATE_BO failed`, stable UI, still slow, icons/red wallpaper wrong.
-- V22: selective flush + EGLImage surface sharing + content swizzle + real syncobj transfer. Local checks and CI green; host image built/verified; push/swap done by user; boot pending explicit approval.
+- V22: selective flush + EGLImage surface sharing + content swizzle + real syncobj transfer. Local checks and CI green; host image built/verified; push/swap done by user; boot approved by user but not executed yet.
 
 ## Log triage checklist
 
