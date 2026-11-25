@@ -9,7 +9,7 @@
 - launchd jobs removed (crash loops, not needed on this port):
     com.apple.remotemanagementd  NSFileManager createDirectoryAtURL: nil (no system group container), every few s
     com.apple.progressd          "BUG IN CLIENT OF LIBPLATFORM: Trying to recursively lock an os_unfair_lock"
-- time zone Asia/Seoul (/private/var/db/timezone/localtime pointed at US/Pacific: the clock read 5:11 at 22:36 KST).
+- time zone Europe/London (/private/var/db/timezone/localtime pointed at US/Pacific: the clock read 5:11 at 22:36 KST).
 - /private/var/mobile/Library/Health/Client made in advance (healthappd: "Error creating core data store directory",
   NSPOSIXErrorDomain 5 creating it at run time).
 - Safari "Fraudulent Website Warning" off: the SafeBrowsing XPC service dereferences a null
@@ -37,7 +37,7 @@ def main(root):
         pass
     print('tmp:', oct(os.stat(t).st_mode & 0o7777), os.stat(t).st_uid)
     tz = os.path.join(root, 'private/var/db/timezone/localtime')
-    want = '/var/db/timezone/zoneinfo/Asia/Seoul'
+    want = '/var/db/timezone/zoneinfo/Europe/London'
     if os.path.islink(tz) and os.readlink(tz) != want:
         os.unlink(tz)
         os.symlink(want, tz)

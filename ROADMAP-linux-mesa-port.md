@@ -9,15 +9,17 @@ tree. Everything under `tools/linux-mesa-ios/` is written fresh in this reposito
 
 The original goal — backboardd rendering the iOS UI through Mesa Panfrost on the
 Mali-G78 — has been demonstrated. The current work is visual correctness and speed,
-not first light. V22 and V23 booted with stable EAGL injection and real
+not first light. V22, V23 and V24 booted with stable EAGL injection and real
 `glReadPixels()` PASS gates; V23 improved the mean frame to `383,307 us`, but icon
 colours remain swapped (blue↔yellow, red↔blue), Clock sub-icons are missing, and an
 expanded folder shows a black bar over the top ~25%. EGLImage/IOSurface sharing has
-never engaged (`shared IOSurface` count zero). V24 source (`62b6668`) fixes the
-4 KiB import-size rejection and normalises EAGL textures/readback to RGBA. CI
+never engaged (`shared IOSurface` count zero). V24 source (`62b6668`) fixed the
+4 KiB import-size rejection and normalised EAGL textures/readback to RGBA. CI
 `45623900771` is green and only `libs21eagl.dylib` changed from V23; the V24
-image passed checks and the user completed the typed swap and started the boot.
-Boot log analysis is pending.
+image passed checks, the user completed the typed swap and booted. Log analysis
+showed `EGL_BAD_PARAMETER` display imports, unchanged icon bytes, returned App
+Library ghosting, missing Clock sub-icons and no speed win. V25 source/scripts
+are prepared but not built or deployed.
 
 | Area | Current state | Evidence / caveat |
 |---|---|---|
@@ -26,7 +28,7 @@ Boot log analysis is pending.
 | GPU proof | **Passed** | `S21GPU: clear PASS rgba=00ff00ff`, textured quad, blended quad and clear+quad readback PASS. |
 | backboardd/EAGL UI | **Working but not final** | 8/8 EAGL methods replaced, no respring/backboardd crash in V22/V23, visible iOS UI. Colours and some icons/UI details still wrong. |
 | Storage | Working for boot | File-backed HFS+ root in `userdata`; XNU UFS remains read-only, with RAM-overlay/rootrw used for recent boots. Preserve partitions and backups. |
-| Open GPU work | V24 | Page-aligned EGLImage imports and RGBA byte-order normalisation; verify icon colours, Clock sub-icons, folder bar and speed. |
+| Open GPU work | V25 (prepared) | Restore V23 deep/copy-out path, implicit dma-buf modifiers, native BGRA upload for BGRA clients/targets, BGRA class for all format-0 texImage pictures, London timezone default; verify icon colours, Clock sub-icons, ghosting, import modifiers and speed. |
 | Not yet proven | 10-minute soak, USB networking inside iOS, Wi-Fi, cellular, cameras, audio | Keep these separate from the GPU win. |
 
 ## 0. Goal and decisions
@@ -127,10 +129,10 @@ The kernel GPU driver and display handoff already exist in this tree.
       `walk L0` lines. The user-observed full-screen green is the CPU-painted
       flag; the gate proof is exact `glReadPixels()` PASS.
 - [x] Present into an IOSurface-backed layer using the existing framebuffer path. V14+
-       injected `libs21eagl.dylib` into `backboardd`; V22/V23 logs show 8/8 EAGL
-       methods replaced, visible SpringBoard UI and exact GPU readback PASS. The
-       CPU copy-out path still presents most buffers; V24 tries to enable direct
-       EGLImage/IOSurface sharing.
+       injected `libs21eagl.dylib` into `backboardd`; V22/V23/V24 logs show 8/8
+       EAGL methods replaced, visible SpringBoard UI and exact GPU readback PASS.
+       The CPU copy-out path still presents most buffers; V25 removes the explicit
+       dma-buf modifier attributes that caused V24's `EGL_BAD_PARAMETER` imports.
 
 ### Phase 4 — backboardd integration
 - [x] Use the same-build (20H392 / iOS 16.7.16) HakiOS EAGL bridge from
@@ -159,7 +161,9 @@ The kernel GPU driver and display handoff already exist in this tree.
       used `mode=list`; zero `export failed`/`CREATE_BO failed` and no respring.
 - [ ] Enable EGLImage/IOSurface sharing and cut the CPU copy-out: V22/V23 mean
       copy-out was ~242 ms (~58–63% of frame time) with zero shared surfaces.
-      V24 rounds import sizes to 4 KiB and normalises EAGL byte order.
+      V24 rounded sizes and normalised byte order but its display imports failed
+      with `EGL_BAD_PARAMETER`; V25 uses implicit linear modifiers and logs the
+      display extension status.
 - [ ] Async submit, GPU clocks/thermal, renderer boot-arg and a 10-minute soak.
 - [ ] Final visual acceptance: correct colours, icons, folder/black-bar behaviour
       and usable speed in one boot log and on-screen observation.
@@ -194,9 +198,9 @@ regulator were enough to render; no vendor DVFS/OPP needed for first light.
    (V12, 2026-11-24).
 3. [x] Full-screen colour result visible on the panel (no shell needed).
 4. [x] Apple logo during the migration screen, then SpringBoard and lock/home
-   screen via Mesa/EAGL (V14–V23 boots).
+   screen via Mesa/EAGL (V14–V24 boots).
 5. [ ] Correct icon colours, folder/Clock sub-icons and visible UI details in one
-   boot (V24 is the current attempt).
+   boot (V25 is the prepared next attempt).
 6. [ ] 10-minute soak without GPU hang or panic.
 
 ## 5. Risks

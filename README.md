@@ -21,7 +21,7 @@ The older first-light/ramdisk sections below are kept as historical bring-up det
 | UFS storage | Exynos UFS initializes in XNU and exposes the file-backed HFS+ root in `userdata` via a boot-time extent map; raw UFS remains read-only, with overlay/rootrw used for recent boots |
 | UFS HS-G4 | **Passed in boot tests behind `ufshs`** — `PA_PWRMODE` changes from `0x55` to `0x11`; speed not yet measured |
 | GPU proof | **Passed** — Mesa 26.2.4 Panfrost on Mali-G78: exact `glReadPixels()` PASS for clear, textured quad, blended quad and clear+quad (V5/V12 onward) |
-| GPU UI | **Mostly works** — `backboardd` EAGL renders the iOS UI via Mesa in V14+; V22/V23 were stable with zero `export failed`/`CREATE_BO failed` and no respring. Still open: blue↔yellow/red↔blue icon swaps, missing Clock sub-icons, expanded-folder black bar, and ~0.3–0.4 s frames. V24 CI/image verified and swapped in; boot started, log analysis pending |
+| GPU UI | **Mostly works** — `backboardd` EAGL renders the iOS UI via Mesa in V14+; V22/V23/V24 were stable with zero `export failed`/`CREATE_BO failed` and no respring. Still open: blue↔yellow/red↔blue icon swaps, missing Clock sub-icons, expanded-folder black bar, and ~0.3–0.4 s frames. V24 boot analysed: EGLImage imports hit `EGL_BAD_PARAMETER`, ghosting/colours/Clock sub-icons did not improve. V25 source/scripts are prepared, not built or deployed |
 | USB / network | Kernel CDC-ECM console and USB networking work for bringing/logs; iOS itself does not yet use `ue0` |
 | Wi-Fi / cellular / cameras / audio | Not part of the proven current state; keep separate from the GPU win |
 | Safety | Preserve Android, bootloaders, recovery, modem, persist, backups and the `userdata` layout. No GPT changes. Confirm each destructive step |
@@ -54,7 +54,8 @@ These values are from the current handoff and bring-up observations; they are no
 8. **Full iOS userland (2026-10-31 onward):** real `launchd`, SpringBoard, backboardd, Settings and Control Center run from the file-backed root; touch, power/volume buttons and swipe-up unlock work; all 8 cores run with `cpus=8`.
 9. **Mesa/Panfrost GPU proof (V5/V12):** surfaceless GLES clear, textured quad, blended quad and clear+quad pass exact `glReadPixels()` checks on the Mali-G78. The full-screen colour flag is CPU-painted and is not the proof.
 10. **Mesa/EAGL UI (V14–V23):** injected `backboardd` renders the iOS UI through `libs21eagl.dylib`; 8/8 EAGL methods are replaced, V22/V23 have zero `export failed`/`CREATE_BO failed` and no respring. V22 mean frame `422,309 us`; V23 `383,307 us` with App Library ghosting fixed. Colours and some icons/UI details remain wrong.
-11. **V24 (deployed, boot pending):** source fixes page-aligned EGLImage imports and RGBA byte-order normalisation. linux-mesa-ios CI `45623900771` succeeded in 16m18s; all eight artifacts are Mach-O arm64 and only `libs21eagl.dylib` changed from V23. The V24 HFS+ image passed fsck/hash checks, the user completed the typed swap (`ACTIVE_V24_READY`, active hash `db4c5326…ca5f86`), and started the boot. Boot log analysis is pending.
+11. **V24 (deployed, boot analysed):** source fixes page-aligned EGLImage imports and RGBA byte-order normalisation. linux-mesa-ios CI `45623900771` succeeded in 16m18s; all eight artifacts are Mach-O arm64 and only `libs21eagl.dylib` changed from V23. The V24 HFS+ image passed fsck/hash checks, the user completed the typed swap (`ACTIVE_V24_READY`, active hash `db4c5326…ca5f86`), and booted. The log confirmed stable selective flush but `EGL_BAD_PARAMETER` display imports, unchanged icon bytes, returned App Library ghosting, missing Clock sub-icons and no speed win.
+12. **V25 (prepared, not built/deployed):** restores V23's proven deep/display/copy-out path, removes explicit dma-buf modifier attributes, uploads BGRA client pictures/targets as native `GL_BGRA`, classifies all format-0 `-texImageIOSurface:` pictures as BGRA, and defaults the timezone to `Europe/London`. Image/push scripts are ready; CI approval is required next.
 
 ## Exynos UFS: status and remaining work
 
@@ -72,7 +73,7 @@ Remaining storage limitations (historical UFS scope, not a denial of the current
 - **Pinning:** f2fs extent stability after image-file writes has not been conclusively proven. Regenerate and compare the extent map after every write.
 - **Patch series:** the note about later `sweet_ufs.c` patches being skipped comes from the 2026-10-24 handoff; check current CI logs rather than assuming it is still true.
 
-Next for the GPU route: finish V24 visual correctness, prove `shared IOSurface` or a reliable CPU path, run a long soak, and keep buttons/touch/charging/storage behaviour stable. Historical storage tasks (HS-G4 speed, pin proof) remain separate.
+Next for the GPU route: ask before V25 CI, then build/verify the V25 image, let the user swap/boot it with the sniffer running, and check icon colours, Clock sub-icons, App Library ghosting, import modifiers, copy-out speed and stability. Prove `shared IOSurface` or a reliable CPU path, run a long soak, and keep buttons/touch/charging/storage behaviour stable. Historical storage tasks (HS-G4 speed, pin proof) remain separate.
 
 ## Safety rules
 

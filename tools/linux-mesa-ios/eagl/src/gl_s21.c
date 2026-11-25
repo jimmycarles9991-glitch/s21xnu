@@ -376,6 +376,7 @@ import_image(EGLDisplay dpy, IOSurfaceRef surface, size_t row, size_t height,
 {
 	static PFNEGLCREATEIMAGEKHRPROC create_image;
 	static int no_proc;
+	static unsigned extensions_logged;
 	uintptr_t base = (uintptr_t)IOSurfaceGetBaseAddress(surface);
 	uint32_t handle = 0;
 	uint64_t gpu_va = 0;
@@ -391,6 +392,14 @@ import_image(EGLDisplay dpy, IOSurfaceRef surface, size_t row, size_t height,
 	}
 	if (create_image == NULL)
 		return EGL_NO_IMAGE_KHR;
+	if (!extensions_logged) {
+		const char *exts = eglQueryString(dpy, EGL_EXTENSIONS);
+
+		extensions_logged = 1;
+		sayf("S21EAGL: EGL dma-buf import modifiers are %s\n",
+		    exts != NULL && strstr(exts, "EGL_EXT_image_dma_buf_import_modifiers") != NULL ?
+		    "advertised" : "absent");
+	}
 
 	if (s21_drm_import_user((uint64_t)base, size, &handle, &gpu_va) != 0) {
 		if (imports_failed++ < 8) {
@@ -405,6 +414,12 @@ import_image(EGLDisplay dpy, IOSurfaceRef surface, size_t row, size_t height,
 		return EGL_NO_IMAGE_KHR;
 	}
 
+	/* V25: use the implicit modifier. Mesa only accepts the explicit
+	 * MODIFIER_LO/HI attributes when the display advertises
+	 * EGL_EXT_image_dma_buf_import_modifiers; V24's display surfaces were
+	 * rejected with EGL_BAD_PARAMETER before the import ever reached the
+	 * Panfrost driver. DRM_FORMAT_MOD_INVALID means linear here, so omitting
+	 * the attributes keeps these simple IOSurface buffers linear. */
 	const EGLint attr[] = {
 		EGL_WIDTH, (EGLint)IOSurfaceGetWidth(surface),
 		EGL_HEIGHT, (EGLint)height,
@@ -412,8 +427,6 @@ import_image(EGLDisplay dpy, IOSurfaceRef surface, size_t row, size_t height,
 		EGL_DMA_BUF_PLANE0_FD_EXT, prime_fd,
 		EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
 		EGL_DMA_BUF_PLANE0_PITCH_EXT, (EGLint)row,
-		EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT, (EGLint)(DRM_FORMAT_MOD_LINEAR & 0xffffffffULL),
-		EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT, (EGLint)(DRM_FORMAT_MOD_LINEAR >> 32),
 		EGL_NONE
 	};
 	image = create_image(dpy, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, attr);
