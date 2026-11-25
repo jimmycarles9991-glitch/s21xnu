@@ -38,6 +38,7 @@ extern "C" {
 #define DRM_PRIME_CAP_EXPORT 0x2
 
 typedef unsigned int drm_magic_t;
+typedef unsigned int drm_context_t;
 
 /* macOS omits sched_setscheduler() from its system headers; the Panfrost
  * kmod perf thread calls it. Declared here because this is the compatibility
@@ -134,6 +135,9 @@ drmVersionPtr drmGetVersion(int fd);
 void drmFreeVersion(drmVersionPtr v);
 int drmGetCap(int fd, uint64_t capability, uint64_t *value);
 int drmGetMagic(int fd, drm_magic_t *magic);
+int drmAuthMagic(int fd, drm_magic_t magic);
+int drmCreateContext(int fd, drm_context_t *handle);
+int drmDestroyContext(int fd, drm_context_t handle);
 char *drmGetBusid(int fd);
 char *drmGetDeviceNameFromFd(int fd);
 int drmGetNodeTypeFromFd(int fd);
@@ -147,6 +151,7 @@ int drmGetDevices(drmDevicePtr devices[], int max_devices);
 int drmGetDevices2(uint32_t flags, drmDevicePtr devices[], int max_devices);
 int drmGetDeviceFromDevId(dev_t dev_id, uint32_t flags, drmDevicePtr *device);
 char *drmGetDeviceNameFromFd2(int fd);
+int drmDevicesEqual(drmDevicePtr a, drmDevicePtr b);
 void drmFreeDevice(drmDevicePtr *device);
 void drmFreeDevices(drmDevicePtr devices[], int count);
 

@@ -375,6 +375,27 @@ drmGetMagic(int fd, drm_magic_t *magic)
    return -1;
 }
 
+int
+drmAuthMagic(int fd, drm_magic_t magic)
+{
+   (void)fd; (void)magic;
+   return -1;
+}
+
+int
+drmCreateContext(int fd, drm_context_t *handle)
+{
+   (void)fd; (void)handle;
+   return -1;
+}
+
+int
+drmDestroyContext(int fd, drm_context_t handle)
+{
+   (void)fd; (void)handle;
+   return -1;
+}
+
 char *
 drmGetBusid(int fd)
 {
@@ -573,6 +594,14 @@ drmGetDeviceNameFromFd2(int fd)
 {
    (void)fd;
    return NULL;
+}
+
+int
+drmDevicesEqual(drmDevicePtr a, drmDevicePtr b)
+{
+   /* Device enumeration always reports no devices on iOS. Pointer identity is
+    * enough for the only EGL callers, which compare two cached pointers. */
+   return a == b ? 1 : 0;
 }
 
 void
