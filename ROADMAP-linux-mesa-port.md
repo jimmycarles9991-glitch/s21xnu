@@ -18,8 +18,9 @@ never engaged (`shared IOSurface` count zero). V24 source (`62b6668`) fixed the
 `45623900771` is green and only `libs21eagl.dylib` changed from V23; the V24
 image passed checks, the user completed the typed swap and booted. Log analysis
 showed `EGL_BAD_PARAMETER` display imports, unchanged icon bytes, returned App
-Library ghosting, missing Clock sub-icons and no speed win. V25 source/scripts
-are prepared but not built or deployed.
+Library ghosting, missing Clock sub-icons and no speed win. V25 source/docs
+are committed; approved CI run `45640981522` is green and its eight Mach-O arm64
+artifacts are verified. No V25 image, swap or boot has happened.
 
 | Area | Current state | Evidence / caveat |
 |---|---|---|
@@ -28,7 +29,7 @@ are prepared but not built or deployed.
 | GPU proof | **Passed** | `S21GPU: clear PASS rgba=00ff00ff`, textured quad, blended quad and clear+quad readback PASS. |
 | backboardd/EAGL UI | **Working but not final** | 8/8 EAGL methods replaced, no respring/backboardd crash in V22/V23, visible iOS UI. Colours and some icons/UI details still wrong. |
 | Storage | Working for boot | File-backed HFS+ root in `userdata`; XNU UFS remains read-only, with RAM-overlay/rootrw used for recent boots. Preserve partitions and backups. |
-| Open GPU work | V25 (prepared) | Restore V23 deep/copy-out path, implicit dma-buf modifiers, native BGRA upload for BGRA clients/targets, BGRA class for all format-0 texImage pictures, London timezone default; verify icon colours, Clock sub-icons, ghosting, import modifiers and speed. |
+| Open GPU work | V25 (CI green, not deployed) | Restore V23 deep/copy-out path, implicit dma-buf modifiers, native BGRA upload for BGRA clients/targets, BGRA class for all format-0 texImage pictures, London timezone default; verify icon colours, Clock sub-icons, ghosting, import modifiers and speed. |
 | Not yet proven | 10-minute soak, USB networking inside iOS, Wi-Fi, cellular, cameras, audio | Keep these separate from the GPU win. |
 
 ## 0. Goal and decisions
@@ -200,7 +201,7 @@ regulator were enough to render; no vendor DVFS/OPP needed for first light.
 4. [x] Apple logo during the migration screen, then SpringBoard and lock/home
    screen via Mesa/EAGL (V14–V24 boots).
 5. [ ] Correct icon colours, folder/Clock sub-icons and visible UI details in one
-   boot (V25 is the prepared next attempt).
+   boot (V25 is the next attempt; CI artifacts are verified, deployment pending).
 6. [ ] 10-minute soak without GPU hang or panic.
 
 ## 5. Risks
