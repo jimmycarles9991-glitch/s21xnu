@@ -49,7 +49,7 @@ Updated 2026-11-25. Keep this file short: it is the active handoff for the next 
   - `libs21drm.dylib` `7e82ccff8062413c578dea4f665a9cf0319807eefc8c5dc783fe2b84eed26ad3`
   - `libs21eagl.dylib` `cc3104e8728ee7de1dcd4bd1468b5974432dc084e5434756eb6a202aa8ce7f8b`
 - Kernel patch is unchanged for V22: the V21 kernel already implements selector 11 (`kSMSubmitList`). A V22 boot can reuse `/home/tom/Downloads/kernel-v21/kernel.development.sweet`; prefer the V22 kernel for traceability. V22 userland is already built and installed in the active image.
-- V23 source fix `519ada5` (`eagl: V23 read large format-0 client pictures as BGRA`) is committed and pushed. It forces format-0 surfaces with width or height >= 100 to BGRA, while keeping the opacity sampler for small tinted masks. No V23 CI, artifacts, image, push/swap or boot yet.
+- V23 source fixes `519ada5` + `fc69974` are committed. Large format-0 surfaces passed to `-texImageIOSurface:` are forced BGRA; attached format-0 masks (even 103x103/101x101 Settings/Clock-like surfaces) keep the opacity sampler. Byte-order logging now covers 128 surfaces and includes dimensions and caller. No V23 CI, artifacts, image, push/swap or boot yet.
 
 ## V21 boot result (observed, 2026-11-25)
 
@@ -67,6 +67,7 @@ Updated 2026-11-25. Keep this file short: it is the active handoff for the next 
 
 - Log: `/home/tom/Downloads/udp-sniff-20261125-115921.txt` (27,259 lines / 2,246,876 bytes).
 - User: “OK YES FASTER BUT ICONS ALMOST THERE CUZ BLUE SHOWS AS YELLOW AND YELLOW SHOWS AS BLUE”.
+- Follow-up: Settings and Clock app sub-icons (stopwatch/timer etc.) are not visible correctly; in the App Library the app window appears “ghosted into the bg”. No screenshot was provided. These symptoms are not yet tied to specific surface IDs; the log itself shows no backboardd crash or zero-lit icon surfaces.
 - Gate/UI markers: EAGL injection pid 58 line `471`; `S21GPU: clear PASS` line `768`; 8/8 EAGL methods replaced lines `954-962`; `SWEET FB: swap` 16; `submit result` 993.
 - Selective flush worked: 993/993 submits `mode=list`, zero `mode=full`. Zero `export failed`, `CREATE_BO failed`, `pool exhausted`, `bo map failed`, `panfrost_batch_init failed`, `0x505`, `0x506`. No backboardd/SpringBoard crash and no respring. The 10 `EXC_CORPSE_NOTIFY` entries are other daemons (widget check-in timeouts, `contextstored` non-fatal `EXC_RESOURCE`, etc.).
 - EGLImage/PRIME sharing did not engage: zero `shared IOSurface` lines; wrapped surfaces used the CPU upload path. The speed gain came from the submit/fence path, not zero-copy.
@@ -110,7 +111,7 @@ Expected outcome is uncertain: best case stable/faster with mostly correct icons
 
 ## Next move
 
-1. V23 source fix `519ada5` is committed and pushed. V22 kernel/userland/image remains active and booted; no V23 CI, artifacts, image, push/swap or boot yet.
+1. V23 source fixes `519ada5` + `fc69974` are committed. V22 kernel/userland/image remains active and booted; no V23 CI, artifacts, image, push/swap or boot yet.
 2. Ask explicit approval for V23 CI, artifacts, image, push/swap and boot. The change is userland-only; the V22 kernel can be reused.
 3. If approved: run linux-mesa-ios CI only (xnu unchanged), verify userland artifacts, build V23 image from active V22, then prepare a typed-confirmation push/swap script. User runs sniffer first, then boots with the V22 kernel.
 4. Analyse the V23 log for `BGRA (large client picture)`, icon middle bytes, blue/yellow icons, and confirm V22's speed/stability markers have not regressed.
@@ -131,7 +132,7 @@ Expected outcome is uncertain: best case stable/faster with mostly correct icons
 - V20: kernel page-table reclaim + MAP_BO rollback; no observed reclaim path, 183 `CREATE_BO failed`, respring, slow.
 - V21: BO/VA limits, Mesa NULL-deref fix, single-readback copy-out; zero `CREATE_BO failed`, stable UI, still slow, icons/red wallpaper wrong.
 - V22: selective flush + EGLImage surface sharing + content swizzle + real syncobj transfer. Booted: much faster and stable, zero `export failed`/`CREATE_BO failed`, icons nearly correct but blue/yellow swapped. Not a final win.
-- V23: source fix only; force large format-0 client pictures to BGRA so saturated blue/yellow icons are not misread as ABGR. Committed/pushed, not built or booted.
+- V23: source fixes only; force large `-texImageIOSurface:` client pictures to BGRA for saturated blue/yellow icons, keep attached masks on the ABGR sampler, and log byte order for 128 surfaces. Not built or booted.
 
 ## Log triage checklist
 
@@ -150,7 +151,7 @@ grep -n '0x505\|0x506\|glReadPixels' LOG
 
 - Active handoff: `/home/tom/s21xnu-linux-mesa/NOTES.md`. Second copy kept in sync: `/home/tom/s21xnu-main/NOTES.md`.
 - V22 source commits: `f69330b` + build fixes `52010e9`, `2ddd129`; notes include the completed push/swap and boot result.
-- V23 source fix: `519ada5`; no V23 CI/artifacts/image/boot yet.
+- V23 source fixes: `519ada5`, `fc69974`; no V23 CI/artifacts/image/boot yet.
 - V22 CI: xnu `45596778651` success; linux-mesa-ios `45600557745` success. Failed attempts: `45596778741`, `45598612838`.
 - V22 boot log: `/home/tom/Downloads/udp-sniff-20261125-115921.txt`.
 - V22 artifacts: kernel `/home/tom/Downloads/kernel-v22/kernel.development.sweet` SHA-256 `1607a49d53ea12c26f5a7b8b28444f39a07774424fb8690beb648fed9c0da8cd`; userland `/home/tom/Downloads/ios-mesa-g78-v22/`.
