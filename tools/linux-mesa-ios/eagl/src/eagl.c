@@ -621,6 +621,17 @@ wrapped_order_of(IOSurfaceRef surface)
 	    IOSurfaceGetBytesPerElement(surface) != 4 || base == NULL || row < width * 4)
 		return WRAPPED_ABGR;
 
+	/* V23: every large format-0 surface seen here is an app icon or another
+	 * client picture whose bytes are BGRA.  The opacity sampler below ties on
+	 * saturated blue/yellow icons because their blue byte is also 0x00 or
+	 * 0xff, so V22 read some of them as ABGR and swapped their colours.  Keep
+	 * the sampler for small tinted masks, which really are opacity-first. */
+	if (width >= 100 || height >= 100) {
+		if (told++ < 24)
+			say("hakios-gl: wrapped surface %u byte order: BGRA (large client picture)\n", IOSurfaceGetID(surface));
+		return WRAPPED_BGRA;
+	}
+
 	for (unsigned yi = 0; yi < N; yi++) {
 		size_t y = height > 1 ? (size_t)yi * (height - 1) / (N - 1) : 0;
 		const uint8_t *p = base + row * y;
