@@ -38,18 +38,17 @@ Updated 2026-11-25. Keep this file short: it is the active handoff for the next 
   - First linux-mesa-ios run `45596778741` on head `d0ba852`: **failed**; `gl_s21.c` used `<IOSurface/IOSurface.h>`, which the iOS SDK exposes as `<IOSurface/IOSurfaceRef.h>` (same header `eagl.c` already uses).
   - Fix commit `52010e9`; linux-mesa-ios rerun `45598612838` also **failed**: `gl_s21.c` could not find the fake `<xf86drm.h>` because the EAGL compile lacked `-I$HERE/include`.
   - Fix commit `2ddd129` adds that include path; linux-mesa-ios `45600557745` on head `2ddd129`: **success**, completed `2026-11-25T11:11:10Z`. Host test passed inside CI.
-- User approved (2026-11-25) building the V22 host image and preparing the push/swap script. User then approved the V22 push/swap itself and chose to run the script personally; no boot approval yet.
-- V22 artifacts are downloaded and verified locally. **No V22 image, push, swap or boot has happened yet.** Ask before any device write.
-- Prepared scripts (both `bash -n` PASS, not executed):
-  - `/home/tom/Downloads/install-s21eagl-image-v22.sh` — bases on V21 image, asserts V21 lib hashes, installs the three V22 libs, fsck, writes `V22_IMAGE_READY`.
-  - `/home/tom/Downloads/push-and-swap-v22.sh` — requires typed `SWAP_V22`, expects active V21, stages/verifies V22, swaps active image only. No boot/kexec/partition change.
-- This shell cannot use interactive sudo, so the user must run the image script: `sudo /home/tom/Downloads/install-s21eagl-image-v22.sh`.
+- V22 host image built by the user; push/swap executed by the user with typed `SWAP_V22`. Active root is now V22. **No V22 boot has happened yet.** Ask before boot.
+- V22 image `/home/tom/ios-sweet/build/iosroot-hojun-816f870-eagl-v22.img`: SHA-256 `8cf044022932213676245e5320533f6c74779a5edf6aae760f241e650646320b`, 17,179,869,184 B, `root:root 644`; pre/post `fsck.hfsplus` OK.
+- Device swap: rsync 17,179,869,184 B at 23.59 MB/s in 11m34s; stage hash verified; F2FS GC 9982 → 10051 free segments; sequential `dd` in 183 s at 93.9 MB/s; printed `ACTIVE_V22_READY`.
+- Independent read-only recheck: active SHA-256 `8cf044022932213676245e5320533f6c74779a5edf6aae760f241e650646320b`, `root:root 644`, `extents=3797`, `free_segments=10050`, tunables `2048`/`0`.
+- Scripts used: `/home/tom/Downloads/install-s21eagl-image-v22.sh` and `/home/tom/Downloads/push-and-swap-v22.sh`; both `bash -n` PASS. No assistant boot/kexec/flash/partition change.
 - Userland artifact: `/home/tom/Downloads/ios-mesa-g78-v22/`; local `SHA256SUMS` PASS; all 8 files Mach-O arm64.
 - V22 changed libs vs V21:
   - `libgallium-26.2.4.dylib` `b68bc18f3e409fb2d4ec6482ce0f7f1d6bc2214200ba77c09ad1e9a002e147a2`
   - `libs21drm.dylib` `7e82ccff8062413c578dea4f665a9cf0319807eefc8c5dc783fe2b84eed26ad3`
   - `libs21eagl.dylib` `cc3104e8728ee7de1dcd4bd1468b5974432dc084e5434756eb6a202aa8ce7f8b`
-- Kernel patch is unchanged for V22: the V21 kernel already implements selector 11 (`kSMSubmitList`). A V22 boot can reuse `/home/tom/Downloads/kernel-v21/kernel.development.sweet`; userland must be rebuilt from V22 source.
+- Kernel patch is unchanged for V22: the V21 kernel already implements selector 11 (`kSMSubmitList`). A V22 boot can reuse `/home/tom/Downloads/kernel-v21/kernel.development.sweet`; prefer the V22 kernel for traceability. V22 userland is already built and installed in the active image.
 
 ## V21 boot result (observed, 2026-11-25)
 
@@ -98,17 +97,18 @@ Expected outcome is uncertain: best case stable/faster with mostly correct icons
 
 ## Next move
 
-1. Push `testing-mesa-port`: done at head `d0ba852`.
-2. CI/artifact verification is done: xnu `45596778651` green, linux-mesa-ios `45600557745` green, artifacts verified. Ignore failed linux-mesa-ios `45596778741` and `45598612838`.
-3. User ran `sudo /home/tom/Downloads/install-s21eagl-image-v22.sh`; it printed `V22_IMAGE_READY`. Host V22 image `/home/tom/ios-sweet/build/iosroot-hojun-816f870-eagl-v22.img`: SHA-256 `8cf044022932213676245e5320533f6c74779a5edf6aae760f241e650646320b`, 17,179,869,184 B, `root:root 644`; pre/post `fsck.hfsplus` both say `The volume iOSRoot appears to be OK`. User-approved push/swap is pending; user runs `/home/tom/Downloads/push-and-swap-v22.sh` and types `SWAP_V22`.
-4. If approved and device is back in Arch/Android: user runs sniffer first, then boots once with the V22 kernel/userland using the user-only command above.
-5. Analyse V22 log for `mode=list`, `mode=full`, `shared IOSurface`, `wrapped surface ... byte order`, `export failed`, `CREATE_BO failed`, respring, EAGL markers, frame/copy-out times, icons, wallpaper and visibly correct UI.
+1. Source, CI, artifacts, host image and user-approved push/swap are complete. Ignore failed linux-mesa-ios runs `45596778741` and `45598612838`.
+2. Ask explicit user approval before booting. V22 is active on disk, but it has not been booted.
+3. With approval, user runs sniffer first, then boots once with V22:
+   - `cd /home/tom/Downloads && sudo ./sweet-usbnet-sniff.sh`
+   - `cd /home/tom/Downloads && KERNEL_SRC=/home/tom/Downloads/kernel-v22/kernel.development.sweet EXTRA="launchd_unsecure_cache=1" SWEETMETAL=1 GPUCOMP=1 ./boot-hojun-gpu.sh`
+4. Analyse V22 log for `mode=list`, `mode=full`, `shared IOSurface`, `wrapped surface ... byte order`, `export failed`, `CREATE_BO failed`, respring, EAGL markers, frame/copy-out times, icons, wallpaper and visibly correct UI.
 
 ## Active device state
 
-- Read-only preflight 2026-11-25: device is in EndeavourOS with SSH; active `/mnt/android-data/linux/iosroot.img` verified V21 SHA-256 `0c322bf05756a21444f8ffe59e92082454c11a3c743b6a947f4a0e14021856cc`, 17,179,869,184 B, `root:root 644`; 30G free; `free_segments=9988` (the swap script will run F2FS GC).
-- V22 kernel file: `/home/tom/Downloads/kernel-v22/kernel.development.sweet`, SHA-256 `1607a49d53ea12c26f5a7b8b28444f39a07774424fb8690beb648fed9c0da8cd`. V21 kernel SHA-256 `0bc9d5c4c73d146efaa362c363c48cdcdfae4270b244b7d0ee53406a005c8fac` also has selector 11. Either is usable; prefer V22 for traceability.
-- No kernel has been flashed. No V22 image or artifact has touched the device yet.
+- Observed 2026-11-25 after the user-run push/swap: device was in EndeavourOS with SSH; active `/mnt/android-data/linux/iosroot.img` is V22, SHA-256 `8cf044022932213676245e5320533f6c74779a5edf6aae760f241e650646320b`, 17,179,869,184 B, `root:root 644`; `extents=3797`, `free_segments=10050`, tunables `gc_pin_file_thresh=2048`/`gc_urgent=0`; `/mnt/android-data` had 30G free at 73% use.
+- V22 kernel file: `/home/tom/Downloads/kernel-v22/kernel.development.sweet`, SHA-256 `1607a49d53ea12c26f5a7b8b28444f39a07774424fb8690beb648fed9c0da8cd`; not booted yet. V21 kernel SHA-256 `0bc9d5c4c73d146efaa362c363c48cdcdfae4270b244b7d0ee53406a005c8fac` also has selector 11; prefer V22 for traceability.
+- No kernel has been flashed. The active image was overwritten only after the user typed `SWAP_V22`; Android, bootloaders, recovery, modem, persist and backups were untouched.
 - No assistant boot/kexec/flash/partition change has happened.
 
 ## Short version history
@@ -119,7 +119,7 @@ Expected outcome is uncertain: best case stable/faster with mostly correct icons
 - V19: colour fix; normal colours except icons, but BO pool exhaustion and respring.
 - V20: kernel page-table reclaim + MAP_BO rollback; no observed reclaim path, 183 `CREATE_BO failed`, respring, slow.
 - V21: BO/VA limits, Mesa NULL-deref fix, single-readback copy-out; zero `CREATE_BO failed`, stable UI, still slow, icons/red wallpaper wrong.
-- V22: selective flush + EGLImage surface sharing + content swizzle + real syncobj transfer. Local checks and CI green; host image built and verified; push/swap and boot pending explicit approval.
+- V22: selective flush + EGLImage surface sharing + content swizzle + real syncobj transfer. Local checks and CI green; host image built/verified; push/swap done by user; boot pending explicit approval.
 
 ## Log triage checklist
 
@@ -136,8 +136,8 @@ grep -n '0x505\|0x506\|glReadPixels' LOG
 
 ## Key files and artifacts
 
-- Active handoff: `/home/tom/s21xnu-linux-mesa/NOTES.md`.
-- V22 source commits: `f69330b` + build fixes `52010e9`, `2ddd129`; notes through `188f33d` on `testing-mesa-port`.
+- Active handoff: `/home/tom/s21xnu-linux-mesa/NOTES.md`. Second copy kept in sync: `/home/tom/s21xnu-main/NOTES.md`.
+- V22 source commits: `f69330b` + build fixes `52010e9`, `2ddd129`; active handoff includes the completed push/swap deployment result.
 - V22 CI: xnu `45596778651` success; linux-mesa-ios `45600557745` success. Failed attempts: `45596778741`, `45598612838`.
 - V22 artifacts: kernel `/home/tom/Downloads/kernel-v22/kernel.development.sweet` SHA-256 `1607a49d53ea12c26f5a7b8b28444f39a07774424fb8690beb648fed9c0da8cd`; userland `/home/tom/Downloads/ios-mesa-g78-v22/`.
 - V21 source commit: `c6cc351`; CI xnu `45577164674`, linux-mesa-ios `45577164974`.
@@ -145,6 +145,7 @@ grep -n '0x505\|0x506\|glReadPixels' LOG
 - V21 kernel artifact: `/home/tom/Downloads/kernel-v21/kernel.development.sweet`.
 - V21 userland artifact: `/home/tom/Downloads/ios-mesa-g78-v21/`.
 - V21 image/push scripts: `/home/tom/Downloads/install-s21eagl-image-v21.sh`, `/home/tom/Downloads/push-and-swap-v21.sh`.
+- V22 host image: `/home/tom/ios-sweet/build/iosroot-hojun-816f870-eagl-v22.img`; scripts: `/home/tom/Downloads/install-s21eagl-image-v22.sh`, `/home/tom/Downloads/push-and-swap-v22.sh`.
 - Boot script template: `/home/tom/Downloads/boot-hojun-gpu.sh`.
 - V22 edit files: `tools/linux-mesa-ios/eagl/src/eagl.c`, `tools/linux-mesa-ios/eagl/src/gl_s21.c`, `tools/linux-mesa-ios/patch_mesa_ios.py`, `tools/linux-mesa-ios/shim/{s21_drm.c,s21_drm.h,s21_iokit.h,s21_iokit_darwin.c,s21_iokit_host.c,host_test.c}`.
 - Kernel selector 11 ABI reference: `xnu/patches/0112-s21-mali-iokit.sh` (unchanged).
