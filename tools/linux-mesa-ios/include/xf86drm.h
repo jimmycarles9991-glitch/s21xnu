@@ -32,6 +32,11 @@ extern "C" {
 #define DRM_BUS_HOST1X    3
 #define DRM_BUS_FAUX      4
 
+/* Mesa's DRI frontend checks these when reporting dmabuf caps. Values match
+ * include/drm-uapi/drm.h in Mesa 26.2.4. */
+#define DRM_PRIME_CAP_IMPORT 0x1
+#define DRM_PRIME_CAP_EXPORT 0x2
+
 typedef unsigned int drm_magic_t;
 
 /* macOS omits sched_setscheduler() from its system headers; the Panfrost
