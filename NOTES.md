@@ -126,11 +126,11 @@ Updated 2026-11-25. Keep this file short: it is the active handoff for the next 
 - Census gap: `glcensus=1` produced zero `census:` lines despite four `a draw with no program` lines. The V26/V27 `libs21eagl.dylib` does contain the `census:` format strings, so this is not a missing build feature; the next diagnostic should add `glframes=1` and/or a traced frame to identify which CoreAnimation function numbers are involved. Do not interpret the silence as "all no-program draws are handled".
 - User V27 visual report is still pending: colours, app icons, Clock/Settings/Calls/Favorites sub-icons, focus/Wi-Fi backgrounds, folder/Library black bar and perceived speed have not been re-confirmed for this boot.
 
-## V28 source and prepared attempt (CI 45699089205 triggered; not booted)
+## V28 source and prepared attempt (CI 45699089205 green; not booted)
 
 - Source commit `2a21e2b9f7fa9449c46dbd37473dfb2f2de6fce4` (`eagl: V28 program/shader diagnostics and targeted colour variants`) is pushed on `testing-mesa-port`. Local checks PASS: `git diff --check`, regenerated `eagl_gen.h`, and `clang -fsyntax-only` on `eagl.c` and `gl_s21.c`. Untracked `s20/` was not committed.
-- `linux-mesa-ios` CI run `45699089205` was triggered on head `2a21e2b`. Artifact hashes are still pending download; no V28 image exists yet.
-- Image script `/home/tom/Downloads/install-s21eagl-image-v28.sh` and push script `/home/tom/Downloads/push-and-swap-v28.sh` are prepared with `bash -n` PASS. Base is the verified V27 image `6d76b91c...552b0`; only `libs21eagl.dylib` changes. V27 `malinop`, the V26-verified EGL/Gallium/DRM artifacts, clock job and timezone layout are preserved. Exact V28 artifact hashes must be filled in after CI download.
+- `linux-mesa-ios` run `45699089205` on head `2a21e2b`: **success** in 7m40s. Artifacts downloaded to `/home/tom/Downloads/ios-mesa-g78-v28/`; local `SHA256SUMS` PASS and all eight files are Mach-O arm64. Only `libs21eagl.dylib` differs from V26: V28 SHA-256 `37263f5db573e17ff69b43461ee7cc171a3e6be62e165e3f6c2ecd20d548ae3b`.
+- Image script `/home/tom/Downloads/install-s21eagl-image-v28.sh` and push script `/home/tom/Downloads/push-and-swap-v28.sh` are pinned to all eight verified hashes with `bash -n` PASS. Base is the verified V27 image `6d76b91c...552b0`; only `libs21eagl.dylib` changes. V27 `malinop`, the V26-verified EGL/Gallium/DRM artifacts, clock job and timezone layout are preserved. No V28 image exists yet.
 - V28 adds console-visible link-time logs (`V28: program N: D attached shaders [...]`, `V28: program N: variant program M`), small-picture program/fragment logs, a boot diag line, and per-draw variant-use logs. `glcolorfix=0` disables both variants.
 - Variant 1: alpha-only tint shaders (`vec4(t0.a)` then `color * s0`) get an RGB-preserving variant used for 100-200 px square icon textures. Variant 2: `squareImage` shaders (`color * s0 * s1.a`) get an unmasked variant used for wrapped pictures <=100x100. This is targeted from V27 shader text, not a blind byte swap; the on-device program->shader log is the proof.
 - User boot args for this attempt: `DIAG_ARGS="glshaders=1 glcensus=1 glframes=1"`, unchanged V22 kernel, `SWEETMETAL=1 GPUCOMP=1`, `EXTRA="launchd_unsecure_cache=1"`.
@@ -210,7 +210,7 @@ Expected outcome is uncertain: best case stable/faster with mostly correct icons
 
 ## Next move
 
-1. Wait for CI run `45699089205` to finish; download `ios-mesa-g78` to `/home/tom/Downloads/ios-mesa-g78-v28/`. Verify `SHA256SUMS`, all eight Mach-O arm64 files, and fill the exact hashes into `/home/tom/Downloads/install-s21eagl-image-v28.sh`. Recheck `bash -n`.
+1. CI and artifact verification are complete: run `45699089205` green, all eight Mach-O arm64 files verified, hashes pinned, both scripts `bash -n` PASS. No assistant device action has happened.
 2. User runs `sudo /home/tom/Downloads/install-s21eagl-image-v28.sh`, then `/home/tom/Downloads/push-and-swap-v28.sh` with typed `SWAP_V28`. Assistant performs no boot, kexec, flash, partition or SSH-to-device action.
 3. User starts the sniffer first, then boots with `KERNEL_SRC=/home/tom/Downloads/kernel-v22/kernel.development.sweet EXTRA="launchd_unsecure_cache=1" SWEETMETAL=1 GPUCOMP=1 DIAG_ARGS="glshaders=1 glcensus=1 glframes=1" ./boot-hojun-gpu.sh`.
 4. Analyse the V28 log for program->shader association, variant use, icon/sub-icon/focus/Wi-Fi/black-bar defects, stability gates and frame timing. If variants do not engage or make things worse, use `glcolorfix=0` only as a controlled comparison, not another blind swap.
