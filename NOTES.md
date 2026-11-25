@@ -38,7 +38,12 @@ Updated 2026-11-25. Keep this file short: it is the active handoff for the next 
   - First linux-mesa-ios run `45596778741` on head `d0ba852`: **failed**; `gl_s21.c` used `<IOSurface/IOSurface.h>`, which the iOS SDK exposes as `<IOSurface/IOSurfaceRef.h>` (same header `eagl.c` already uses).
   - Fix commit `52010e9`; linux-mesa-ios rerun `45598612838` also **failed**: `gl_s21.c` could not find the fake `<xf86drm.h>` because the EAGL compile lacked `-I$HERE/include`.
   - Fix commit `2ddd129` adds that include path; linux-mesa-ios `45600557745` on head `2ddd129`: **success**, completed `2026-11-25T11:11:10Z`. Host test passed inside CI.
-- V22 artifacts are downloaded and verified locally. **No V22 image, push, swap or boot has happened yet.** No V22 deployment is approved. Ask before any device write.
+- User approved (2026-11-25) building the V22 host image and preparing the push/swap script, but **not** running the push/swap or booting.
+- V22 artifacts are downloaded and verified locally. **No V22 image, push, swap or boot has happened yet.** Ask before any device write.
+- Prepared scripts (both `bash -n` PASS, not executed):
+  - `/home/tom/Downloads/install-s21eagl-image-v22.sh` — bases on V21 image, asserts V21 lib hashes, installs the three V22 libs, fsck, writes `V22_IMAGE_READY`.
+  - `/home/tom/Downloads/push-and-swap-v22.sh` — requires typed `SWAP_V22`, expects active V21, stages/verifies V22, swaps active image only. No boot/kexec/partition change.
+- This shell cannot use interactive sudo, so the user must run the image script: `sudo /home/tom/Downloads/install-s21eagl-image-v22.sh`.
 - Userland artifact: `/home/tom/Downloads/ios-mesa-g78-v22/`; local `SHA256SUMS` PASS; all 8 files Mach-O arm64.
 - V22 changed libs vs V21:
   - `libgallium-26.2.4.dylib` `b68bc18f3e409fb2d4ec6482ce0f7f1d6bc2214200ba77c09ad1e9a002e147a2`
@@ -95,7 +100,7 @@ Expected outcome is uncertain: best case stable/faster with mostly correct icons
 
 1. Push `testing-mesa-port`: done at head `d0ba852`.
 2. CI/artifact verification is done: xnu `45596778651` green, linux-mesa-ios `45600557745` green, artifacts verified. Ignore failed linux-mesa-ios `45596778741` and `45598612838`.
-3. Ask explicit user approval before any V22 image build, push, swap, boot or active-image overwrite.
+3. User runs `sudo /home/tom/Downloads/install-s21eagl-image-v22.sh`; verify `V22_IMAGE_READY`, image hash and fsck logs. Ask again before push/swap.
 4. If approved and device is back in Arch/Android: user runs sniffer first, then boots once with the V22 kernel/userland using the user-only command above.
 5. Analyse V22 log for `mode=list`, `mode=full`, `shared IOSurface`, `wrapped surface ... byte order`, `export failed`, `CREATE_BO failed`, respring, EAGL markers, frame/copy-out times, icons, wallpaper and visibly correct UI.
 
