@@ -100,16 +100,15 @@ Expected outcome is uncertain: best case stable/faster with mostly correct icons
 
 1. Push `testing-mesa-port`: done at head `d0ba852`.
 2. CI/artifact verification is done: xnu `45596778651` green, linux-mesa-ios `45600557745` green, artifacts verified. Ignore failed linux-mesa-ios `45596778741` and `45598612838`.
-3. User runs `sudo /home/tom/Downloads/install-s21eagl-image-v22.sh`; verify `V22_IMAGE_READY`, image hash and fsck logs. Ask again before push/swap.
+3. User ran `sudo /home/tom/Downloads/install-s21eagl-image-v22.sh`; it printed `V22_IMAGE_READY`. Host V22 image `/home/tom/ios-sweet/build/iosroot-hojun-816f870-eagl-v22.img`: SHA-256 `8cf044022932213676245e5320533f6c74779a5edf6aae760f241e650646320b`, 17,179,869,184 B, `root:root 644`; pre/post `fsck.hfsplus` both say `The volume iOSRoot appears to be OK`. Ask again before push/swap.
 4. If approved and device is back in Arch/Android: user runs sniffer first, then boots once with the V22 kernel/userland using the user-only command above.
 5. Analyse V22 log for `mode=list`, `mode=full`, `shared IOSurface`, `wrapped surface ... byte order`, `export failed`, `CREATE_BO failed`, respring, EAGL markers, frame/copy-out times, icons, wallpaper and visibly correct UI.
 
 ## Active device state
 
-- Active root image on device remains the V21 image; host copy `/home/tom/ios-sweet/build/iosroot-hojun-816f870-eagl-v21.img`, SHA-256 `0c322bf05756a21444f8ffe59e92082454c11a3c743b6a947f4a0e14021856cc`.
-- V21 kernel file: `/home/tom/Downloads/kernel-v21/kernel.development.sweet`, SHA-256 `0bc9d5c4c73d146efaa362c363c48cdcdfae4270b244b7d0ee53406a005c8fac`. It contains selector 11.
-- No kernel has been flashed. No V22 image or artifact has touched the device.
-- After the V21 boot, SSH/Android may be unavailable until the user returns to Arch/Android.
+- Read-only preflight 2026-11-25: device is in EndeavourOS with SSH; active `/mnt/android-data/linux/iosroot.img` verified V21 SHA-256 `0c322bf05756a21444f8ffe59e92082454c11a3c743b6a947f4a0e14021856cc`, 17,179,869,184 B, `root:root 644`; 30G free; `free_segments=9988` (the swap script will run F2FS GC).
+- V22 kernel file: `/home/tom/Downloads/kernel-v22/kernel.development.sweet`, SHA-256 `1607a49d53ea12c26f5a7b8b28444f39a07774424fb8690beb648fed9c0da8cd`. V21 kernel SHA-256 `0bc9d5c4c73d146efaa362c363c48cdcdfae4270b244b7d0ee53406a005c8fac` also has selector 11. Either is usable; prefer V22 for traceability.
+- No kernel has been flashed. No V22 image or artifact has touched the device yet.
 - No assistant boot/kexec/flash/partition change has happened.
 
 ## Short version history
@@ -120,7 +119,7 @@ Expected outcome is uncertain: best case stable/faster with mostly correct icons
 - V19: colour fix; normal colours except icons, but BO pool exhaustion and respring.
 - V20: kernel page-table reclaim + MAP_BO rollback; no observed reclaim path, 183 `CREATE_BO failed`, respring, slow.
 - V21: BO/VA limits, Mesa NULL-deref fix, single-readback copy-out; zero `CREATE_BO failed`, stable UI, still slow, icons/red wallpaper wrong.
-- V22: selective flush + EGLImage surface sharing + content swizzle + real syncobj transfer. Local checks green; deployment pending.
+- V22: selective flush + EGLImage surface sharing + content swizzle + real syncobj transfer. Local checks and CI green; host image built and verified; push/swap and boot pending explicit approval.
 
 ## Log triage checklist
 
