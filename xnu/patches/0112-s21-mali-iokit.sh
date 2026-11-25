@@ -52,9 +52,9 @@ void sweet_mali_set_asflush(int on);
 void sweet_mali_log_str(const char *s);
 }
 
-#define SM_MAX_BO        256
+#define SM_MAX_BO        512              /* V21: 256 filled with live BOs and caused CREATE_BO failures */
 #define SM_MAX_BO_BYTES  (15ULL << 20)     /* BOs >= 16 MiB stalled the system (2026-11 notes) */
-#define SM_MAX_TOTAL     (512ULL << 20)    /* wired kernel memory (the kernel sees 2 GiB) */
+#define SM_MAX_TOTAL     (768ULL << 20)    /* V21: 512 MiB was reached by BOs plus imports; keep page-table headroom */
 
 enum {
 	kSMGetInfo = 0,

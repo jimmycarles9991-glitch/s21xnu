@@ -117,8 +117,8 @@ static void
 test_va_table_growth(int fd)
 {
    /* V16 logged 135 live VA segments in one backboardd, over the old fixed
-    * table of 128. A fragmented run must keep allocating, not return ENOMEM. */
-   enum { N = 192 };
+    * table of 128. V20 also filled the old 256-BO shim table. */
+   enum { N = 300 };
    uint32_t bo[N];
    uint64_t va[N];
 
@@ -135,6 +135,23 @@ test_va_table_growth(int fd)
    assert(s21_host_live_bos() == N / 2);
    for (unsigned i = 1; i < N; i += 2)
       assert(drmCloseBufferHandle(fd, bo[i]) == 0);
+   assert(s21_host_live_bos() == 0);
+}
+
+static void
+test_va_best_fit(int fd)
+{
+   uint64_t big_va = 0, small_va = 0, again_va = 0;
+
+   uint32_t big = create_bo(fd, 0x10000, 0, &big_va);
+   uint32_t small = create_bo(fd, 0x4000, 0, &small_va);
+   assert(drmCloseBufferHandle(fd, big) == 0);
+   assert(drmCloseBufferHandle(fd, small) == 0);
+
+   /* The 16 KiB hole is second, so first fit would split the larger hole. */
+   uint32_t again = create_bo(fd, 0x4000, 0, &again_va);
+   assert(again_va == small_va);
+   assert(drmCloseBufferHandle(fd, again) == 0);
    assert(s21_host_live_bos() == 0);
 }
 
@@ -243,6 +260,7 @@ main(void)
    test_small_bo_submit_and_map(fd);
    test_small_bo_16k_alignment(fd);
    test_va_table_growth(fd);
+   test_va_best_fit(fd);
    test_map_failure_rollback(fd);
    test_heap_split(fd);
    test_syncobjs(fd);

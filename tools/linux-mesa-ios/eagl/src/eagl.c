@@ -1006,19 +1006,36 @@ target_to_surface(struct eagl *e, struct image *image)
 	if (IOSurfaceLock(surface, 0, NULL) == 0) {
 		bool planar = IOSurfaceGetPlaneCount(surface) > 0;
 		bool alpha_first = image->alpha_first && !planar && IOSurfaceGetBytesPerElement(surface) == 4;
+		uint8_t *bounce = NULL;
 
 		base = IOSurfaceGetBaseAddress(surface);
 		glPixelStorei(GL_PACK_ROW_LENGTH, (GLint)(row / 4));
 		glPixelStorei(GL_PACK_ALIGNMENT, 4);
-		if (!image->invert) {
-			glReadPixels(0, 0, image->width, image->height, GL_BGRA, GL_UNSIGNED_BYTE, base);
-		} else {
-			for (GLsizei y = 0; y < image->height; y++) {
-				glReadPixels(0, y, image->width, 1, GL_BGRA, GL_UNSIGNED_BYTE, base + row * (size_t)(image->height - 1 - y));
+		/* V21: one full readback plus a CPU row flip. The old inverted path
+		 * issued one glReadPixels() per row and was a large part of the
+		 * ~339 ms copy-out seen in the V20 log. */
+		if (image->invert)
+			bounce = malloc(row * (size_t)image->height);
+		if (!image->invert || bounce != NULL) {
+			glReadPixels(0, 0, image->width, image->height, GL_BGRA, GL_UNSIGNED_BYTE,
+			    bounce != NULL ? bounce : base);
+			if (bounce != NULL) {
+				for (GLsizei y = 0; y < image->height; y++) {
+					memcpy(base + row * (size_t)(image->height - 1 - y),
+					    bounce + row * (size_t)y, row);
+				}
+				free(bounce);
 			}
-		}
-		if (alpha_first) {
-			bgra_to_opacity_first(base, row, image->width, image->height);
+			if (alpha_first)
+				bgra_to_opacity_first(base, row, image->width, image->height);
+		} else {
+			/* Malloc failed: keep the old row-at-a-time fallback. */
+			for (GLsizei y = 0; y < image->height; y++) {
+				glReadPixels(0, y, image->width, 1, GL_BGRA, GL_UNSIGNED_BYTE,
+				    base + row * (size_t)(image->height - 1 - y));
+			}
+			if (alpha_first)
+				bgra_to_opacity_first(base, row, image->width, image->height);
 		}
 		glPixelStorei(GL_PACK_ROW_LENGTH, 0);
 		IOSurfaceUnlock(surface, 0, NULL);

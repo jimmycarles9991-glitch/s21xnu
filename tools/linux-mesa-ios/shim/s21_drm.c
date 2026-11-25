@@ -31,12 +31,12 @@
 #include "drm-uapi/panfrost_drm.h"
 
 #define S21_CHUNK_MAX   (15ULL << 20)    /* SM_MAX_BO_BYTES in 0112 */
-#define S21_TOTAL_MAX   (512ULL << 20)   /* SM_MAX_TOTAL in 0112 */
+#define S21_TOTAL_MAX   (768ULL << 20)   /* SM_MAX_TOTAL in 0112 (V21: was 512 MiB) */
 #define S21_XNU_PAGE    (16ULL << 10)    /* XNU page_size used by kSMCreateBO in 0112 */
 #define S21_VA_BASE     0x30000000ULL
 #define S21_VA_LIMIT    0x70000000ULL
-#define S21_MAX_CHUNKS  64
-#define S21_MAX_BO      256
+#define S21_MAX_CHUNKS  128
+#define S21_MAX_BO      512              /* V21: match the kernel's larger fBo table */
 
 /* Measured on this phone with the Linux Panfrost port; see ROADMAP-linux-mesa-port.md. */
 #define P_GPU_ID        0x92020010ULL
@@ -153,24 +153,32 @@ va_alloc_locked(uint64_t size, uint64_t *out)
    int e = va_init_locked();
    if (e != 0)
       return e;
+   /* V21: best fit. First fit split the large early hole on every small BO
+    * and left no contiguous space for the next tiler heap, even below the
+    * total-size limit. Pick the smallest sufficient hole instead. */
+   unsigned best = C.nva;
    for (unsigned i = 0; i < C.nva; i++) {
       struct va_seg *s = &C.va[i];
       if (s->used || s->hi - s->lo < size)
          continue;
-      uint64_t start = s->lo;
-      if (s->hi - s->lo == size) {
-         s->used = true;
-      } else {
-         if (C.nva == C.va_cap && (e = va_grow_locked()) != 0)
-            return e;
-         s = &C.va[i];          /* realloc may have moved the table */
-         s->lo += size;
-         C.va[C.nva++] = (struct va_seg){ .lo = start, .hi = start + size, .used = true };
-      }
-      *out = start;
-      return 0;
+      if (best == C.nva || s->hi - s->lo < C.va[best].hi - C.va[best].lo)
+         best = i;
    }
-   return -ENOMEM;
+   if (best == C.nva)
+      return -ENOMEM;
+   struct va_seg *s = &C.va[best];
+   uint64_t start = s->lo;
+   if (s->hi - s->lo == size) {
+      s->used = true;
+   } else {
+      if (C.nva == C.va_cap && (e = va_grow_locked()) != 0)
+         return e;
+      s = &C.va[best];          /* realloc may have moved the table */
+      s->lo += size;
+      C.va[C.nva++] = (struct va_seg){ .lo = start, .hi = start + size, .used = true };
+   }
+   *out = start;
+   return 0;
 }
 
 static void
@@ -453,13 +461,19 @@ drmIoctlImpl(int fd, unsigned long request, void *arg)
        * page in its VA range. Reserve that whole range here or a neighbouring
        * small BO can inherit PTEs that the kernel later clears. */
       int e = align_bo_size(c->size, &size);
-      if (e || size > S21_TOTAL_MAX - C.total)
-         return -ENOMEM;
+      if (e)
+         return e;
       uint32_t nk = (uint32_t)((size + S21_CHUNK_MAX - 1) / S21_CHUNK_MAX);
       if (nk > S21_MAX_CHUNKS)
          return -ENOMEM;
 
       pthread_mutex_lock(&C.lock);
+      /* V21: C.total is shared by all backboardd GL threads. Reading it
+       * before taking the lock made concurrent creates reject valid BOs. */
+      if (C.total > S21_TOTAL_MAX || size > S21_TOTAL_MAX - C.total) {
+         pthread_mutex_unlock(&C.lock);
+         return -ENOMEM;
+      }
       uint64_t va;
       e = va_alloc_locked(size, &va);
       if (e) {
@@ -854,6 +868,12 @@ s21_drm_import_user(uint64_t uva, uint64_t len, uint32_t *handle, uint64_t *gpu_
        len > S21_CHUNK_MAX)
       return -EINVAL;
    pthread_mutex_lock(&C.lock);
+   /* V21: imports consume the same global kernel budget as CREATE_BO. The
+    * old shim counted only created BOs, so backboardd could overcommit. */
+   if (C.total > S21_TOTAL_MAX || len > S21_TOTAL_MAX - C.total) {
+      pthread_mutex_unlock(&C.lock);
+      return -ENOMEM;
+   }
    uint64_t va;
    int e = va_alloc_locked(len, &va);
    if (e) {
@@ -891,6 +911,7 @@ s21_drm_import_user(uint64_t uva, uint64_t len, uint32_t *handle, uint64_t *gpu_
    b->va = va;
    b->size = len;
    b->cpu = uva;   /* CPU memory belongs to the caller */
+   C.total += len;
    if (handle)
       *handle = slot + 1;
    if (gpu_va)

@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define HOST_MAX_BOS 256
+#define HOST_MAX_BOS 512              /* V21: match SM_MAX_BO */
 
 struct host_bo {
    int used;

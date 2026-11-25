@@ -12,6 +12,7 @@ Patches:
   * make surfaceless EGL probe directly instead of scanning /sys/class/drm
   * create the Panfrost screen directly (Darwin has no libdrm pipe loader)
   * route BO mmap/munmap through the cached SweetMali mappings in the shim
+  * survive a failed staging-resource allocation instead of dereferencing NULL
 """
 import argparse
 import pathlib
@@ -47,6 +48,7 @@ def main() -> int:
         "src/gallium/frontends/dri/dri2.c",
         "src/panfrost/lib/kmod/pan_kmod.h",
         "src/gallium/drivers/panfrost/pan_bo.c",
+        "src/gallium/drivers/panfrost/pan_resource.c",
         "src/loader/loader.c",
         "src/egl/drivers/dri2/platform_surfaceless.c",
     ]
@@ -192,6 +194,27 @@ s21_pipe_loader_release(struct pipe_loader_device **dev)
                         panfrost_bo_size(bo))) {
 #else
    if (os_munmap((void *)(uintptr_t)bo->ptr.cpu, panfrost_bo_size(bo))) {
+#endif
+'''),
+    ])
+
+    edit(MESA / "src/gallium/drivers/panfrost/pan_resource.c", [
+        ('''      struct panfrost_resource *staging =
+         pan_alloc_staging(ctx, rsrc, level, box);
+      assert(staging);
+''',
+          '''      struct panfrost_resource *staging =
+         pan_alloc_staging(ctx, rsrc, level, box);
+#ifdef S21_IOS
+      /* V21: pan_alloc_staging() calls screen->resource_create(), which can
+       * legitimately fail when the SweetMali BO table is full. Upstream only
+       * asserts here, so a release build dereferenced NULL in backboardd and
+       * caused the SpringBoard respring spiral. Return a failed transfer
+       * instead; glReadPixels() then reports the error without crashing. */
+      if (staging == NULL)
+         return NULL;
+#else
+      assert(staging);
 #endif
 '''),
     ])
