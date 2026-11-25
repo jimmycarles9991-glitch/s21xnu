@@ -17,6 +17,23 @@
 extern "C" {
 #endif
 
+/* Mesa 26.2.4's src/util/libdrm.h defines these when HAVE_LIBDRM is absent.
+ * The S21 cross-build sets HAVE_LIBDRM explicitly so EGL dma-buf import is
+ * compiled in, so our fake <xf86drm.h> must provide the same constants. The
+ * values match libdrm itself. */
+#define DRM_NODE_PRIMARY 0
+#define DRM_NODE_CONTROL 1
+#define DRM_NODE_RENDER  2
+#define DRM_NODE_MAX     3
+
+#define DRM_BUS_PCI       0
+#define DRM_BUS_USB       1
+#define DRM_BUS_PLATFORM  2
+#define DRM_BUS_HOST1X    3
+#define DRM_BUS_FAUX      4
+
+typedef unsigned int drm_magic_t;
+
 /* macOS omits sched_setscheduler() from its system headers; the Panfrost
  * kmod perf thread calls it. Declared here because this is the compatibility
  * header that panfrost_kmod.c already includes. struct sched_param comes from
@@ -103,9 +120,20 @@ typedef struct _drmDevice {
 
 int drmIoctl(int fd, unsigned long request, void *arg);
 int drmCommandWriteRead(int fd, unsigned int command, void *data, unsigned int size);
+int drmAvailable(void);
+int drmOpen(const char *name, const char *busid);
+int drmOpenWithType(const char *name, const char *busid, int type);
+int drmOpenControl(int minor);
+int drmOpenRender(int minor);
 drmVersionPtr drmGetVersion(int fd);
 void drmFreeVersion(drmVersionPtr v);
 int drmGetCap(int fd, uint64_t capability, uint64_t *value);
+int drmGetMagic(int fd, drm_magic_t *magic);
+char *drmGetBusid(int fd);
+char *drmGetDeviceNameFromFd(int fd);
+int drmGetNodeTypeFromFd(int fd);
+char *drmGetPrimaryDeviceNameFromFd(int fd);
+char *drmGetRenderDeviceNameFromFd(int fd);
 int drmClose(int fd);
 
 int drmGetDevice(int fd, drmDevicePtr *device);
