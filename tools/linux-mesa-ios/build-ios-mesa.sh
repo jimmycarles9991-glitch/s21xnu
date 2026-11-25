@@ -198,7 +198,7 @@ GL_XML="$MESA/src/mesa/glapi/glapi/registry/gl.xml"
 python3 "$EAGL/mkeagl.py" "$EAGL/src/eagl_slots.txt" \
    "$GL_XML" "$EAGL_OBJ/exported-gl.txt" \
    "$EAGL/src/eagl.c" > "$EAGL_OBJ/eagl_gen.h"
-CF_EAGL="-O2 -g -w -I$EAGL_OBJ -I$EAGL/src -I$EAGL/include -I$HERE/shim -I$MESA/include"
+CF_EAGL="-O2 -g -w -I$EAGL_OBJ -I$EAGL/src -I$EAGL/include -I$HERE/include -I$HERE/shim -I$MESA/include"
 xcrun clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min="$IOS_MIN" \
    $CF_EAGL -c "$EAGL/src/eagl.c" -o "$EAGL_OBJ/eagl.o"
 xcrun clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min="$IOS_MIN" \
