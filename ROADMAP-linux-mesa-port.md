@@ -14,8 +14,9 @@ not first light. V22 and V23 booted with stable EAGL injection and real
 colours remain swapped (blue↔yellow, red↔blue), Clock sub-icons are missing, and an
 expanded folder shows a black bar over the top ~25%. EGLImage/IOSurface sharing has
 never engaged (`shared IOSurface` count zero). V24 source (`62b6668`) fixes the
-4 KiB import-size rejection and normalises EAGL textures/readback to RGBA; it is
-awaiting CI/deploy/boot.
+4 KiB import-size rejection and normalises EAGL textures/readback to RGBA. CI
+`45623900771` is green and only `libs21eagl.dylib` changed from V23; image build,
+deploy and boot are still pending.
 
 | Area | Current state | Evidence / caveat |
 |---|---|---|
