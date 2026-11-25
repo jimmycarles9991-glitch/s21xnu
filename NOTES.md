@@ -36,7 +36,8 @@ Updated 2026-11-25. Keep this file short: it is the active handoff for the next 
 - V22 source is complete, pushed and locally checked.
   - xnu run `45596778651` on head `d0ba852`: **success**, completed `2026-11-25T10:49:34Z`. Kernel artifact downloaded to `/home/tom/Downloads/kernel-v22/`; `SHA256SUMS` PASS; Mach-O arm64; SHA-256 `1607a49d53ea12c26f5a7b8b28444f39a07774424fb8690beb648fed9c0da8cd`. Same size as V21 (`17,472,176` B) and `xnu/patches/0112-s21-mali-iokit.sh` is byte-identical to V21; binary hash differs only because of rebuild. Selector 11 is present in the V21/V22 source; V21 boot used it successfully via the shim.
   - First linux-mesa-ios run `45596778741` on head `d0ba852`: **failed**; `gl_s21.c` used `<IOSurface/IOSurface.h>`, which the iOS SDK exposes as `<IOSurface/IOSurfaceRef.h>` (same header `eagl.c` already uses).
-  - Fix commit `52010e9`; rerun linux-mesa-ios `45598612838` on head `52010e9`: **running**.
+  - Fix commit `52010e9`; linux-mesa-ios rerun `45598612838` also **failed**: `gl_s21.c` could not find the fake `<xf86drm.h>` because the EAGL compile lacked `-I$HERE/include`.
+  - Fix commit `2ddd129` adds that include path; linux-mesa-ios `45600557745` on head `2ddd129`: **running**.
 - **No V22 artifacts, image, push, swap or boot has happened yet.** No V22 deployment is approved. Ask before any device write.
 - Kernel patch is unchanged for V22: the V21 kernel already implements selector 11 (`kSMSubmitList`). A V22 boot can reuse `/home/tom/Downloads/kernel-v21/kernel.development.sweet`; userland must be rebuilt from V22 source.
 
@@ -88,7 +89,7 @@ Expected outcome is uncertain: best case stable/faster with mostly correct icons
 ## Next move
 
 1. Push `testing-mesa-port`: done at head `d0ba852`.
-2. Wait for xnu `45596778651` and linux-mesa-ios `45598612838`; download artifacts and verify `SHA256SUMS` + Mach-O arm64. Ignore failed linux-mesa-ios `45596778741`.
+2. Wait for linux-mesa-ios `45600557745`; xnu `45596778651` is already green. Download artifacts and verify `SHA256SUMS` + Mach-O arm64. Ignore failed linux-mesa-ios `45596778741` and `45598612838`.
 3. Ask explicit user approval before any V22 image build, push, swap, boot or active-image overwrite.
 4. If approved and device is back in Arch/Android: user runs sniffer first, then boots once with the V22 kernel/userland using the user-only command above.
 5. Analyse V22 log for `mode=list`, `mode=full`, `shared IOSurface`, `wrapped surface ... byte order`, `export failed`, `CREATE_BO failed`, respring, EAGL markers, frame/copy-out times, icons, wallpaper and visibly correct UI.
