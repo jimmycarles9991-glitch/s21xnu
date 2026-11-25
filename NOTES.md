@@ -34,7 +34,7 @@ Updated 2026-11-25. Keep this file short: it is the active handoff for the next 
 - V21 source commit `c6cc351`; V21 CI green, artifacts verified, image built, pushed/swapped and **booted by the user**.
 - V21 result: stability improved, but still slow; icon colours still wrong; red lockscreen wallpaper remains. Not a win.
 - V22 source is complete, pushed and locally checked.
-  - xnu run `45596778651` on head `d0ba852`: **running**.
+  - xnu run `45596778651` on head `d0ba852`: **success**, completed `2026-11-25T10:49:34Z`. Kernel artifact downloaded to `/home/tom/Downloads/kernel-v22/`; `SHA256SUMS` PASS; Mach-O arm64; SHA-256 `1607a49d53ea12c26f5a7b8b28444f39a07774424fb8690beb648fed9c0da8cd`. Same size as V21 (`17,472,176` B) and `xnu/patches/0112-s21-mali-iokit.sh` is byte-identical to V21; binary hash differs only because of rebuild. Selector 11 is present in the V21/V22 source; V21 boot used it successfully via the shim.
   - First linux-mesa-ios run `45596778741` on head `d0ba852`: **failed**; `gl_s21.c` used `<IOSurface/IOSurface.h>`, which the iOS SDK exposes as `<IOSurface/IOSurfaceRef.h>` (same header `eagl.c` already uses).
   - Fix commit `52010e9`; rerun linux-mesa-ios `45598612838` on head `52010e9`: **running**.
 - **No V22 artifacts, image, push, swap or boot has happened yet.** No V22 deployment is approved. Ask before any device write.
