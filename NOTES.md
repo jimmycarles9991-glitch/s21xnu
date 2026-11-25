@@ -145,9 +145,9 @@ Fresh concise handoff, 2026-11-24. The old ~450 KB chronology was removed from t
 
 ### Next move
 
-1. Ask for explicit approval before any V21 image build/push/swap. Device is currently in iOS; user must return to Arch/Android SSH first.
+1. User decision (2026-11-25): **build the image first, then push/swap only when the user says so.** Image build is approved; push/swap/boot are not approved yet.
 2. User runs `sudo /home/tom/Downloads/install-s21eagl-image-v21.sh` (this shell has no interactive sudo password) and reports `V21_IMAGE_READY` plus the image SHA.
-3. After approval, run `/home/tom/Downloads/push-and-swap-v21.sh` with typed `SWAP_V21`; log to `/tmp/opencode/v21-swap.log`.
+3. Wait for the user's explicit “push and swap” instruction and for the device to be back in Arch/Android with SSH. Only then run `/home/tom/Downloads/push-and-swap-v21.sh` with typed `SWAP_V21`; log to `/tmp/opencode/v21-swap.log`.
 4. User runs sniffer first, then boots once with `KERNEL_SRC=/home/tom/Downloads/kernel-v21/kernel.development.sweet`.
 5. Analyse V21 log for `CREATE_BO failed`, `export failed`, respring, EAGL markers, frame timings, icons and wallpaper. Then do zero-copy/GPU blit for smoothness if needed.
 
