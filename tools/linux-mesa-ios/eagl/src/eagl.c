@@ -608,7 +608,7 @@ image_forget(struct eagl *e, GLuint texture)
 enum wrapped_order { WRAPPED_ABGR, WRAPPED_BGRA };
 
 static enum wrapped_order
-wrapped_order_of(IOSurfaceRef surface)
+wrapped_order_of(IOSurfaceRef surface, bool target)
 {
 	static unsigned told;
 	size_t width = IOSurfaceGetWidth(surface), height = IOSurfaceGetHeight(surface);
@@ -621,14 +621,16 @@ wrapped_order_of(IOSurfaceRef surface)
 	    IOSurfaceGetBytesPerElement(surface) != 4 || base == NULL || row < width * 4)
 		return WRAPPED_ABGR;
 
-	/* V23: every large format-0 surface seen here is an app icon or another
-	 * client picture whose bytes are BGRA.  The opacity sampler below ties on
-	 * saturated blue/yellow icons because their blue byte is also 0x00 or
-	 * 0xff, so V22 read some of them as ABGR and swapped their colours.  Keep
-	 * the sampler for small tinted masks, which really are opacity-first. */
-	if (width >= 100 || height >= 100) {
+	/* V23: large format-0 surfaces passed to -texImageIOSurface: are app icons
+	 * or other client pictures whose bytes are BGRA.  The opacity sampler below
+	 * ties on saturated blue/yellow icons because their blue byte is also 0x00
+	 * or 0xff, so V22 read some of them as ABGR and swapped their colours.
+	 * Attached surfaces are different: even 100 px ones are opacity-first
+	 * masks drawn into by CoreAnimation, so keep sampling those. */
+	if (!target && (width >= 100 || height >= 100)) {
 		if (told++ < 24)
-			say("hakios-gl: wrapped surface %u byte order: BGRA (large client picture)\n", IOSurfaceGetID(surface));
+			say("hakios-gl: wrapped surface %u (%zux%zu) byte order: BGRA (large client picture)\n", IOSurfaceGetID(surface),
+			    width, height);
 		return WRAPPED_BGRA;
 	}
 
@@ -649,9 +651,10 @@ wrapped_order_of(IOSurfaceRef surface)
 	}
 	enum wrapped_order order = last_alpha > first_alpha ? WRAPPED_BGRA : WRAPPED_ABGR;
 
-	if (told++ < 24) {
-		say("hakios-gl: wrapped surface %u byte order: %s (%zu/%zu samples have opacity first, %zu last)\n",
-		    IOSurfaceGetID(surface), order == WRAPPED_BGRA ? "BGRA" : "ABGR", first_alpha, samples, last_alpha);
+	if (told++ < 128) {
+		say("hakios-gl: wrapped surface %u (%zux%zu, %s) byte order: %s (%zu/%zu samples have opacity first, %zu last)\n",
+		    IOSurfaceGetID(surface), width, height, target ? "attach" : "texImage",
+		    order == WRAPPED_BGRA ? "BGRA" : "ABGR", first_alpha, samples, last_alpha);
 	}
 	return order;
 }
@@ -4390,7 +4393,7 @@ my_texImageIOSurface(id self, SEL selector, IOSurfaceRef surface, unsigned long 
 	 * opacity-first ABGR, but app icons are often BGRA even though they are
 	 * asked for as GL_RGBA. Detect the byte order instead of guessing. */
 	image->wrapped = IOSurfaceGetPixelFormat(surface) == 0;
-	if (image->wrapped && wrapped_order_of(surface) == WRAPPED_BGRA) {
+	if (image->wrapped && wrapped_order_of(surface, false) == WRAPPED_BGRA) {
 		image->bgra_for_rgba = image->format == GL_RGBA;
 	} else {
 		image->alpha_first = image->wrapped;
@@ -4459,7 +4462,7 @@ my_attachImage(id self, SEL selector, unsigned long target, IOSurfaceRef surface
 	 * there being no pixel format.
 	 */
 	image->wrapped = pixels == 0;
-	if (image->wrapped && wrapped_order_of(surface) == WRAPPED_BGRA) {
+	if (image->wrapped && wrapped_order_of(surface, true) == WRAPPED_BGRA) {
 		/* The requested format is already GL_BGRA, so no swizzle is needed. */
 		image->bgra_for_rgba = true;
 	} else {
