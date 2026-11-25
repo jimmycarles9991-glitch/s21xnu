@@ -12,7 +12,7 @@
  * else still falls back to eagl.c's CPU upload/copy-out paths.
  */
 #include <CoreFoundation/CoreFoundation.h>
-#include <IOSurface/IOSurface.h>
+#include <IOSurface/IOSurfaceRef.h>
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
