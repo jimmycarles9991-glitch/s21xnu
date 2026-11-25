@@ -38,7 +38,7 @@ Updated 2026-11-25. Keep this file short: it is the active handoff for the next 
   - First linux-mesa-ios run `45596778741` on head `d0ba852`: **failed**; `gl_s21.c` used `<IOSurface/IOSurface.h>`, which the iOS SDK exposes as `<IOSurface/IOSurfaceRef.h>` (same header `eagl.c` already uses).
   - Fix commit `52010e9`; linux-mesa-ios rerun `45598612838` also **failed**: `gl_s21.c` could not find the fake `<xf86drm.h>` because the EAGL compile lacked `-I$HERE/include`.
   - Fix commit `2ddd129` adds that include path; linux-mesa-ios `45600557745` on head `2ddd129`: **success**, completed `2026-11-25T11:11:10Z`. Host test passed inside CI.
-- User approved (2026-11-25) building the V22 host image and preparing the push/swap script, but **not** running the push/swap or booting.
+- User approved (2026-11-25) building the V22 host image and preparing the push/swap script. User then approved the V22 push/swap itself and chose to run the script personally; no boot approval yet.
 - V22 artifacts are downloaded and verified locally. **No V22 image, push, swap or boot has happened yet.** Ask before any device write.
 - Prepared scripts (both `bash -n` PASS, not executed):
   - `/home/tom/Downloads/install-s21eagl-image-v22.sh` — bases on V21 image, asserts V21 lib hashes, installs the three V22 libs, fsck, writes `V22_IMAGE_READY`.
@@ -100,7 +100,7 @@ Expected outcome is uncertain: best case stable/faster with mostly correct icons
 
 1. Push `testing-mesa-port`: done at head `d0ba852`.
 2. CI/artifact verification is done: xnu `45596778651` green, linux-mesa-ios `45600557745` green, artifacts verified. Ignore failed linux-mesa-ios `45596778741` and `45598612838`.
-3. User ran `sudo /home/tom/Downloads/install-s21eagl-image-v22.sh`; it printed `V22_IMAGE_READY`. Host V22 image `/home/tom/ios-sweet/build/iosroot-hojun-816f870-eagl-v22.img`: SHA-256 `8cf044022932213676245e5320533f6c74779a5edf6aae760f241e650646320b`, 17,179,869,184 B, `root:root 644`; pre/post `fsck.hfsplus` both say `The volume iOSRoot appears to be OK`. Ask again before push/swap.
+3. User ran `sudo /home/tom/Downloads/install-s21eagl-image-v22.sh`; it printed `V22_IMAGE_READY`. Host V22 image `/home/tom/ios-sweet/build/iosroot-hojun-816f870-eagl-v22.img`: SHA-256 `8cf044022932213676245e5320533f6c74779a5edf6aae760f241e650646320b`, 17,179,869,184 B, `root:root 644`; pre/post `fsck.hfsplus` both say `The volume iOSRoot appears to be OK`. User-approved push/swap is pending; user runs `/home/tom/Downloads/push-and-swap-v22.sh` and types `SWAP_V22`.
 4. If approved and device is back in Arch/Android: user runs sniffer first, then boots once with the V22 kernel/userland using the user-only command above.
 5. Analyse V22 log for `mode=list`, `mode=full`, `shared IOSurface`, `wrapped surface ... byte order`, `export failed`, `CREATE_BO failed`, respring, EAGL markers, frame/copy-out times, icons, wallpaper and visibly correct UI.
 
