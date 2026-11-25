@@ -64,6 +64,8 @@ void s21_host_fail_submit_range(unsigned count);
 uint32_t s21_host_live_bos(void);
 uint32_t s21_host_last_map_va(void);
 void s21_host_fail_map(unsigned count);   /* fail the next count MAP_BO calls */
+void s21_host_logs_reset(void);
+unsigned s21_host_logs(void);
 #endif
 
 #ifdef __cplusplus

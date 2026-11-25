@@ -50,7 +50,8 @@
  * to write down (twelve by default); V28 writes down the shaders attached to each program at link
  * time, and glcolorfix=0 turns off its two shader variants (see program_variants()): alpha-only
  * tint programs get an RGB variant for full app icons, and squareImage-mask programs get an
- * unmasked variant for small wrapped sub-icon pictures; glcensus=1 keeps count of the draws
+ * unmasked variant for small wrapped sub-icon pictures; V30 also uses a square-mask variant for
+ * 100-200 px wrapped expanded icons, disabled by glfolder=0; glcensus=1 keeps count of the draws
  * CoreAnimation makes with no program and of the functions it asks for in vain (see census_draw());
  * glshaders=1 writes down
  * the text of every shader, glshow=TEXTURE (or WxH, with glshow_part=W,H and glshow_zoom=N) puts that texture over the corner of the picture, glplain=0 leaves the
@@ -236,6 +237,7 @@ struct group_texture {
 };
 static int group_vibrant_on = 1;        /* boot-arg glgroup=0 */
 static int icon_rgb_fix = 1;            /* boot-arg glcolorfix=0 turns off both V29 variants */
+static int folder_variant_fix = 1;      /* boot-arg glfolder=0 disables the V30 100-200 square-icon variant */
 static int swizzle_identity = 0;        /* boot-arg glswizzle=1: identity swizzle on EAGL-owned textures */
 static unsigned group_covered, group_laid, group_flattened;    /* (glframes=1) this frame's */
 
@@ -1516,7 +1518,24 @@ drawing(struct eagl *e)
 		GLint viewport[4] = { 0, 0, 0, 0 }, scissor[4] = { 0, 0, 0, 0 };
 
 		if (image->width == image->height && image->width >= 100 && image->width <= 200 && e->program != 0) {
-			e->draw_variant = e->alpha_variant[e->program % 256];
+			unsigned p = e->program % 256;
+
+			e->draw_variant = e->alpha_variant[p];
+			/* V30: the normal 70x70 folder previews are target surfaces and never
+			 * reach this branch. Expanded icons are wrapped source images; when a
+			 * square-mask variant exists but no alpha-RGB variant does, use it.
+			 * Program 5's plain shader has no variant, so home icons are untouched. */
+			if (e->draw_variant == 0 && folder_variant_fix && image->wrapped &&
+			    e->square_variant[p] != 0) {
+				static unsigned told_variant;
+
+				e->draw_variant = e->square_variant[p];
+				if (told_variant++ < 8) {
+					say("hakios-gl: V30: square icon variant %u for program %u (surface %u, texture %u), "
+					    "framebuffer %u, frame %u\n", e->draw_variant, e->program,
+					    IOSurfaceGetID(image->surface), e->bound[0], e->framebuffer, e->frames + 1);
+				}
+			}
 		}
 		if (image->width >= 900 ? told_large++ < 16 : told++ < 40) {
 			glGetIntegerv(GL_VIEWPORT, viewport);
@@ -4999,6 +5018,7 @@ install(void)
 		fetch_offered = strstr(arguments, "glfetch=0") == NULL;
 		group_vibrant_on = strstr(arguments, "glgroup=0") == NULL;
 		icon_rgb_fix = strstr(arguments, "glcolorfix=0") == NULL;
+		folder_variant_fix = strstr(arguments, "glfolder=0") == NULL;
 		if ((argument = strstr(arguments, "gltrace_place=")) != NULL) {
 			char *end = (char *)argument + 14;
 
@@ -5012,8 +5032,8 @@ install(void)
 		census_on = strstr(arguments, "glcensus=1") != NULL;
 		frame_lines = strstr(arguments, "glframes=1") != NULL;
 		swizzle_identity = strstr(arguments, "glswizzle=1") != NULL;
-		say("hakios-gl: V29 diagnostics: glshaders=%d glcensus=%d glframes=%d glcolorfix=%d glswizzle=%d\n",
-		    all_shaders, census_on, frame_lines, icon_rgb_fix, swizzle_identity);
+		say("hakios-gl: V30 diagnostics: glshaders=%d glcensus=%d glframes=%d glcolorfix=%d glfolder=%d glswizzle=%d\n",
+		    all_shaders, census_on, frame_lines, icon_rgb_fix, folder_variant_fix, swizzle_identity);
 		latency_lines = strstr(arguments, "touch_lat=1") != NULL;
 		if ((argument = strstr(arguments, "glslow=")) != NULL) {
 			slow_calls_us = strtoull(argument + 7, NULL, 10);

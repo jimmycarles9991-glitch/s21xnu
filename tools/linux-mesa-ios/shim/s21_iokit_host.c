@@ -29,6 +29,7 @@ static struct {
    uint32_t last_map_va;
    unsigned fail_map;
    unsigned fail_range;
+   unsigned logs;
 } H;
 
 void
@@ -61,6 +62,8 @@ uint64_t s21_host_last_second_jc(void) { return H.second_jc; }
 uint32_t s21_host_last_map_va(void) { return H.last_map_va; }
 void s21_host_fail_map(unsigned count) { H.fail_map = count; }
 void s21_host_fail_submit_range(unsigned count) { H.fail_range = count; }
+void s21_host_logs_reset(void) { H.logs = 0; }
+unsigned s21_host_logs(void) { return H.logs; }
 
 int
 s21_iokit_open(void)
@@ -267,4 +270,5 @@ void
 s21_iokit_log(const char *line)
 {
    (void)line;
+   H.logs++;
 }

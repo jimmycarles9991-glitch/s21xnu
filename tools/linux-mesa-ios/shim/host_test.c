@@ -62,6 +62,36 @@ create_bo(int fd, uint32_t size, uint32_t flags, uint64_t *gpu_va)
    return c.handle;
 }
 
+/* V30: hot DRM lines are opt-in. One BO + one submit must not emit the V29
+ * per-BO/submit-call flood; a quiet boot keeps at most the first result line. */
+static void
+test_quiet_logging(int fd)
+{
+   uint64_t va = 0;
+   uint32_t bo = create_bo(fd, 0x4000, 0, &va);
+   uint32_t sync = 0;
+   uint32_t handles[1] = { bo };
+   struct drm_panfrost_submit sub = {
+      .jc = va,
+      .out_sync = sync,
+      .bo_handles = (uint64_t)(uintptr_t)handles,
+      .bo_handle_count = 1,
+      .requirements = PANFROST_JD_REQ_FS,
+   };
+
+   assert(drmSyncobjCreate(fd, 0, &sync) == 0);
+   sub.out_sync = sync;
+   s21_host_logs_reset();
+   assert(drmIoctl(fd, DRM_IOCTL_PANFROST_SUBMIT, &sub) == 0);
+   assert(s21_host_logs() <= 1);
+
+   uint32_t first = 99;
+   assert(drmSyncobjWait(fd, &sync, 1, 0, 0, &first) == 0);
+   assert(first == 0);
+   assert(drmSyncobjDestroy(fd, sync) == 0);
+   assert(drmCloseBufferHandle(fd, bo) == 0);
+}
+
 static void
 test_small_bo_submit_and_map(int fd)
 {
@@ -444,6 +474,7 @@ main(void)
    test_submit_pair(fd);
    test_submit_pair_large_flush(fd);
    test_submit_pair_fallback(fd);
+   test_quiet_logging(fd);
 
    drmVersionPtr v = drmGetVersion(fd);
    assert(v != NULL && v->name != NULL && strcmp(v->name, "panfrost") == 0);

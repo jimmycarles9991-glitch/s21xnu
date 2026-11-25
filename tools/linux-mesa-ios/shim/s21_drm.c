@@ -28,6 +28,10 @@
 #include <sys/timerfd.h>
 #include <unistd.h>
 
+#ifdef S21_IOS
+#include <sys/sysctl.h>
+#endif
+
 #include "xf86drm.h"
 #include "drm-uapi/drm.h"
 #include "drm-uapi/panfrost_drm.h"
@@ -78,6 +82,17 @@ struct s21_sync {
    uint64_t point;
 };
 
+/* V30: the V29 log path issued one IOKit call for every hot DRM line. The
+ * observed boot had 96,104 per-BO lines alone, so logging is now opt-in and
+ * the important totals/timings are reported by a few aggregate lines. */
+struct s21_drm_stats {
+   uint64_t submits, pairs, list, full, drains, deferred, errors, hot_skipped;
+   uint64_t timing_n;
+   uint64_t pre_ns, pre_max, job_ns, job_max;
+   uint64_t post_ns, post_max, lock_ns, lock_max;
+   bool first_pair, first_list;
+};
+
 /* Mesa's JM backend issues the tiler and fragment jobs of one batch back to
  * back. Keep only that pair here until kSMSubmitRange can run both chains under
  * one sm_lock section. Nothing is queued across a syncobj observation. */
@@ -95,23 +110,6 @@ struct va_seg {
    bool used;
 };
 
-static void
-log_bo_label(uint32_t handle, const char *label)
-{
-   char line[192];
-   char buf[128];
-   size_t n = 0;
-   if (label != NULL) {
-      while (n + 1 < sizeof(buf) && label[n] != '\0') {
-         unsigned char c = (unsigned char)label[n];
-         buf[n++] = (c >= 0x20 && c < 0x7f) ? (char)c : '?';
-      }
-   }
-   buf[n] = '\0';
-   snprintf(line, sizeof(line), "S21DRM: label h=%u label=%s", handle, buf);
-   s21_iokit_log(line);
-}
-
 static struct {
    pthread_mutex_t lock;
    bool up;
@@ -124,12 +122,211 @@ static struct {
    int sync_fd[S21_MAX_BO];   /* fd -> syncobj handle + 1, 0 = unused */
    int prime_fd[S21_MAX_BO];  /* BO handle - 1 -> synthetic dma-buf fd, 0 = unused */
    bool no_pair;              /* S21_NO_PAIR=1 keeps the old two-submit path */
+   bool verbose;              /* drmdiag=1: V29-style hot logs plus selector-12 timings */
+   bool stats_logged;
    struct s21_pending_submit pending;
+   struct s21_drm_stats stats;
 } C = {
    .lock = PTHREAD_MUTEX_INITIALIZER,
    .sync_fd = { 0 },
    .prime_fd = { 0 },
 };
+
+static void
+log_bo_label(uint32_t handle, const char *label)
+{
+   char line[192];
+   char buf[128];
+   size_t n = 0;
+
+   if (!C.verbose)
+      return;
+   if (label != NULL) {
+      while (n + 1 < sizeof(buf) && label[n] != '\0') {
+         unsigned char c = (unsigned char)label[n];
+         buf[n++] = (c >= 0x20 && c < 0x7f) ? (char)c : '?';
+      }
+   }
+   buf[n] = '\0';
+   snprintf(line, sizeof(line), "S21DRM: label h=%u label=%s", handle, buf);
+   s21_iokit_log(line);
+}
+
+static unsigned
+bootarg_uint(const char *args, const char *key)
+{
+   size_t kl;
+   const char *p;
+
+   if (args == NULL || key == NULL)
+      return 0;
+   kl = strlen(key);
+   for (p = args; *p != '\0';) {
+      const char *tok;
+      size_t len;
+      while (*p == ' ')
+         p++;
+      tok = p;
+      while (*p != '\0' && *p != ' ')
+         p++;
+      len = (size_t)(p - tok);
+      if (len > kl + 1 && strncmp(tok, key, kl) == 0 && tok[kl] == '=')
+         return (unsigned)strtoul(tok + kl + 1, NULL, 10);
+   }
+   return 0;
+}
+
+/* Called with C.lock held. Boot args are the reliable source on iOS; the
+ * environment variables also let the host test and local runs override them. */
+static void
+read_config_locked(void)
+{
+   char args[2048];
+   const char *env;
+
+   args[0] = '\0';
+#ifdef S21_IOS
+   {
+      size_t n = sizeof(args) - 1;
+      if (sysctlbyname("kern.bootargs", args, &n, NULL, 0) == 0)
+         args[n < sizeof(args) - 1 ? n : sizeof(args) - 1] = '\0';
+   }
+#endif
+   env = getenv("S21_DRM_DIAG");
+   C.verbose = bootarg_uint(args, "drmdiag") != 0 ||
+               (env != NULL && env[0] != '\0' && env[0] != '0');
+   env = getenv("S21_NO_PAIR");
+   C.no_pair = bootarg_uint(args, "S21_NO_PAIR") != 0 ||
+               (env != NULL && env[0] == '1');
+}
+
+enum {
+   S21_NOTE_LIST = 0,
+   S21_NOTE_FULL,
+   S21_NOTE_PAIR,
+};
+
+static void
+stats_add_timing(uint64_t *sum, uint64_t *max, uint64_t v)
+{
+   *sum += v;
+   if (v > *max)
+      *max = v;
+}
+
+/* Record one IOKit submit and decide which low-volume log lines are needed.
+ * A quiet boot gets one successful pair/list line plus periodic summaries;
+ * errors are always logged. drmdiag=1 restores the V29-style per-submit log. */
+static bool
+stats_note(uint32_t kind, int e, uint32_t n, const uint64_t *out,
+           bool *first, bool *bad)
+{
+   bool heartbeat = false;
+   bool failure = e != 0;
+
+   if (kind == S21_NOTE_PAIR) {
+      if (n < 6 || out == NULL || out[0] != 0 || out[5] != 0)
+         failure = true;
+   } else if (n < 1 || out == NULL || out[0] != 0) {
+      failure = true;
+   }
+   *bad = failure;
+
+   pthread_mutex_lock(&C.lock);
+   C.stats.submits++;
+   if (kind == S21_NOTE_PAIR) {
+      C.stats.pairs++;
+      if (!failure) {
+         stats_add_timing(&C.stats.pre_ns, &C.stats.pre_max, out[1]);
+         stats_add_timing(&C.stats.job_ns, &C.stats.job_max, out[2]);
+         stats_add_timing(&C.stats.post_ns, &C.stats.post_max, out[3]);
+         stats_add_timing(&C.stats.lock_ns, &C.stats.lock_max, out[4]);
+         C.stats.timing_n++;
+      }
+   } else if (kind == S21_NOTE_LIST) {
+      C.stats.list++;
+   } else {
+      C.stats.full++;
+   }
+   if (failure)
+      C.stats.errors++;
+
+   *first = false;
+   if (!C.verbose && !failure) {
+      bool *flag = kind == S21_NOTE_PAIR ? &C.stats.first_pair
+                                         : &C.stats.first_list;
+      if (!*flag) {
+         *flag = true;
+         *first = true;
+      }
+   }
+   if (!C.verbose && C.stats.submits >= 512 && C.stats.submits % 512 == 0)
+      heartbeat = true;
+   pthread_mutex_unlock(&C.lock);
+   return heartbeat;
+}
+
+static void
+stats_note_drain(void)
+{
+   pthread_mutex_lock(&C.lock);
+   C.stats.drains++;
+   pthread_mutex_unlock(&C.lock);
+}
+
+static void
+stats_note_deferred(void)
+{
+   pthread_mutex_lock(&C.lock);
+   C.stats.deferred++;
+   pthread_mutex_unlock(&C.lock);
+}
+
+static void
+stats_get(struct s21_drm_stats *dst)
+{
+   pthread_mutex_lock(&C.lock);
+   *dst = C.stats;
+   pthread_mutex_unlock(&C.lock);
+}
+
+static uint64_t
+avg_u64(uint64_t sum, uint64_t n)
+{
+   return n != 0 ? sum / n : 0;
+}
+
+static void
+log_stats(const struct s21_drm_stats *s)
+{
+   char line[256];
+
+   snprintf(line, sizeof(line),
+            "S21DRM: stats submits=%llu pairs=%llu list=%llu full=%llu "
+            "drains=%llu deferred=%llu errors=%llu hot_skipped=%llu",
+            (unsigned long long)s->submits, (unsigned long long)s->pairs,
+            (unsigned long long)s->list, (unsigned long long)s->full,
+            (unsigned long long)s->drains, (unsigned long long)s->deferred,
+            (unsigned long long)s->errors,
+            (unsigned long long)s->hot_skipped);
+   s21_iokit_log(line);
+   if (s->timing_n == 0)
+      return;
+   snprintf(line, sizeof(line),
+            "S21DRM: timing samples=%llu pre avg=%llu max=%llu "
+            "job avg=%llu max=%llu post avg=%llu max=%llu "
+            "lock avg=%llu max=%llu ns",
+            (unsigned long long)s->timing_n,
+            (unsigned long long)avg_u64(s->pre_ns, s->timing_n),
+            (unsigned long long)s->pre_max,
+            (unsigned long long)avg_u64(s->job_ns, s->timing_n),
+            (unsigned long long)s->job_max,
+            (unsigned long long)avg_u64(s->post_ns, s->timing_n),
+            (unsigned long long)s->post_max,
+            (unsigned long long)avg_u64(s->lock_ns, s->timing_n),
+            (unsigned long long)s->lock_max);
+   s21_iokit_log(line);
+}
 
 static int
 align_bo_size(uint64_t v, uint64_t *out)
@@ -244,7 +441,7 @@ bo_destroy_locked(uint32_t handle)
    struct s21_bo *b = bo_find_locked(handle);
    if (b == NULL)
       return;
-   {
+   if (C.verbose) {
       char line[192];
       snprintf(line, sizeof(line),
                "S21DRM: destroy h=%u va=%llx size=%llx nk=%u heap=%u k0=%u",
@@ -290,6 +487,7 @@ send_list_submit(uint32_t slot, uint64_t jc, unsigned nread, const uint64_t *lis
     int e = s21_iokit_mixed(S21_SUBMIT_LIST, in, 4, list,
                             (size_t)nread * 2 * sizeof(uint64_t), out, &n);
     bool fallback = false;
+    bool first = false, bad = false;
     if (e) {
        fallback = true;
        n = 1;
@@ -297,16 +495,25 @@ send_list_submit(uint32_t slot, uint64_t jc, unsigned nread, const uint64_t *lis
        e = s21_iokit_scalar(S21_SUBMIT, in, 3, out, &n);
     }
     {
-       char line[192];
-       snprintf(line, sizeof(line),
-                "S21DRM: submit result slot=%u mode=%s ret=%d out=%llx",
-                slot, fallback ? "full" : "list", e,
-                (unsigned long long)(n ? out[0] : 0));
-       s21_iokit_log(line);
+       bool heartbeat = stats_note(fallback ? S21_NOTE_FULL : S21_NOTE_LIST,
+                                   e, n, out, &first, &bad);
+       if (C.verbose || first || bad) {
+          char line[192];
+          snprintf(line, sizeof(line),
+                   "S21DRM: submit result slot=%u mode=%s ret=%d out=%llx",
+                   slot, fallback ? "full" : "list", e,
+                   (unsigned long long)(n ? out[0] : 0));
+          s21_iokit_log(line);
+       }
+       if (heartbeat) {
+          struct s21_drm_stats snap;
+          stats_get(&snap);
+          log_stats(&snap);
+       }
     }
     if (e)
        return e;
-    if (n < 1 || out[0] != 0)
+    if (bad)
        return -EIO;
     return 0;
 }
@@ -325,6 +532,7 @@ send_pair_submit(const struct s21_pending_submit *p, uint64_t frag_jc,
     uint64_t in[5] = { p->slot, p->jc, 5000, S21_RANGE_SMALL, frag_jc };
     uint64_t out[6] = { 0 };
     uint32_t n = 6;
+    bool first = false, bad = false;
 
     *transport_failed = false;
     for (unsigned src = 0; src < 2; src++) {
@@ -337,6 +545,9 @@ send_pair_submit(const struct s21_pending_submit *p, uint64_t frag_jc,
           if (seen)
              continue;
           if (nr == S21_MAX_BO / 2) {
+             pthread_mutex_lock(&C.lock);
+             C.stats.errors++;
+             pthread_mutex_unlock(&C.lock);
              s21_iokit_log("S21DRM: pair flush list overflow; replaying as two submits");
              *transport_failed = true;
              return -E2BIG;
@@ -350,19 +561,33 @@ send_pair_submit(const struct s21_pending_submit *p, uint64_t frag_jc,
     int e = s21_iokit_mixed(S21_SUBMIT_RANGE, in, 5, range, nr * 2 * sizeof(uint64_t),
                             out, &n);
     {
-       char line[192];
-       snprintf(line, sizeof(line),
-                "S21DRM: submit result slot=%u+0 mode=pair ret=%d out=%llx/%llx ranges=%u",
-                p->slot, e, (unsigned long long)(n ? out[0] : 0),
-                (unsigned long long)(n > 5 ? out[5] : 0), nr);
-       s21_iokit_log(line);
+       bool heartbeat = stats_note(S21_NOTE_PAIR, e, n, out, &first, &bad);
+       if (C.verbose || first || bad) {
+          char line[256];
+          snprintf(line, sizeof(line),
+                   "S21DRM: submit result slot=%u+0 mode=pair ret=%d "
+                   "out=%llx/%llx ranges=%u pre_ns=%llu job_ns=%llu "
+                   "post_ns=%llu lock_ns=%llu",
+                   p->slot, e, (unsigned long long)(n ? out[0] : 0),
+                   (unsigned long long)(n > 5 ? out[5] : 0), nr,
+                   (unsigned long long)(n > 1 ? out[1] : 0),
+                   (unsigned long long)(n > 2 ? out[2] : 0),
+                   (unsigned long long)(n > 3 ? out[3] : 0),
+                   (unsigned long long)(n > 4 ? out[4] : 0));
+          s21_iokit_log(line);
+       }
+       if (heartbeat) {
+          struct s21_drm_stats snap;
+          stats_get(&snap);
+          log_stats(&snap);
+       }
     }
     if (e) {
        *transport_failed = true;
        return e;
     }
     /* A nonzero status means the jobs already ran or faulted; never replay. */
-    if (n < 6 || out[0] != 0 || out[5] != 0)
+    if (bad)
        return -EIO;
     return 0;
 }
@@ -383,7 +608,8 @@ drain_pending(void)
        p = C.pending;
        memset(&C.pending, 0, sizeof(C.pending));
        pthread_mutex_unlock(&C.lock);
-       {
+       stats_note_drain();
+       if (C.verbose) {
           char line[160];
           snprintf(line, sizeof(line), "S21DRM: draining deferred slot=%u jc=%llx",
                    p.slot, (unsigned long long)p.jc);
@@ -438,8 +664,7 @@ s21_drm_open(void)
 {
    pthread_mutex_lock(&C.lock);
    if (!C.up) {
-      const char *no_pair = getenv("S21_NO_PAIR");
-      C.no_pair = no_pair != NULL && no_pair[0] == '1';
+      read_config_locked();
       int e = s21_iokit_open();
       if (e) {
          pthread_mutex_unlock(&C.lock);
@@ -448,6 +673,8 @@ s21_drm_open(void)
       C.up = true;
       s21_iokit_log(C.no_pair ? "S21DRM: pair batching disabled by S21_NO_PAIR"
                               : "S21DRM: pair batching enabled");
+      if (C.verbose)
+         s21_iokit_log("S21DRM: drmdiag=1 hot logging enabled");
    }
    pthread_mutex_unlock(&C.lock);
    return S21_DRM_FD;
@@ -456,9 +683,20 @@ s21_drm_open(void)
 int
 drmClose(int fd)
 {
+   struct s21_drm_stats snap;
+   bool logged;
+
    (void)fd;
    /* Do not leave a tiler job stuck behind a present/teardown boundary. */
-   return drain_pending();
+   int e = drain_pending();
+   stats_get(&snap);
+   pthread_mutex_lock(&C.lock);
+   logged = C.stats_logged;
+   C.stats_logged = true;
+   pthread_mutex_unlock(&C.lock);
+   if (!logged)
+      log_stats(&snap);
+   return e;
 }
 
 int
@@ -774,12 +1012,14 @@ prepare_submit(const struct drm_panfrost_submit *s, uint32_t *slot,
       if (b == NULL)
          continue;
       b->seq = seq;
-      {
+      if (C.verbose) {
          char line[192];
          snprintf(line, sizeof(line), "S21DRM: submit bo h=%u va=%llx size=%llx",
                   handles[i], (unsigned long long)b->va,
                   (unsigned long long)b->size);
          s21_iokit_log(line);
+      } else {
+         C.stats.hot_skipped++;
       }
       if (b->size <= S21_SMALL_PAGES * 4096 || *nread == S21_MAX_BO / 2)
          continue;
@@ -793,7 +1033,7 @@ prepare_submit(const struct drm_panfrost_submit *s, uint32_t *slot,
    for (unsigned i = 0; i < *nread; i++)
       list[*nread + i] = list[i];
 
-   {
+   if (C.verbose) {
       char line[192];
       snprintf(line, sizeof(line),
                "S21DRM: submit slot=%u jc=%llx req=%x nbo=%u list=%u(nread=%u)",
@@ -828,7 +1068,8 @@ defer_submit(const struct drm_panfrost_submit *s, uint32_t slot,
    C.pending.nva = nread;
    memcpy(C.pending.va, list, (size_t)nread * 2 * sizeof(uint64_t));
    pthread_mutex_unlock(&C.lock);
-   {
+   stats_note_deferred();
+   if (C.verbose) {
       char line[160];
       snprintf(line, sizeof(line), "S21DRM: submit deferred slot=%u jc=%llx ctx=%u",
                slot, (unsigned long long)s->jc, s->jm_ctx_handle);
@@ -1018,7 +1259,7 @@ drmIoctlImpl(int fd, unsigned long request, void *arg)
       c->handle = slot + 1;
       c->size = size;
       c->offset = va;   /* GPU VA, also returned by GET_BO_OFFSET */
-      {
+      if (C.verbose) {
          char line[160];
          snprintf(line, sizeof(line),
                   "S21DRM: create h=%u va=%llx size=%llx flags=%x heap=%u k0=%u",
