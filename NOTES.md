@@ -28,13 +28,12 @@ Fresh concise handoff, 2026-11-24. The old ~450 KB chronology was removed from t
 - Keep untracked `s20/` as a read-only reference. Do not commit it. Do not copy `ca_hooks.c`.
 - User prefers one combined script/attempt instead of several separate boots.
 
-## Current state: V20 boot analysed, V21 diagnostics next
+## Current state: V21 real fixes ready, CI pending
 
-- Branch: `testing-mesa-port`; clean except untracked `s20/`. Head `48baee7` (notes) after V20 deployment.
-- V20 source commit: `dda812d` (`gpu ios: V20 pool reclaim and MAP_BO rollback`).
-- V20 was fully deployed and the user booted it. Result: no win — still slow, SpringBoard respring continued, some icons still pinky.
+- Branch: `testing-mesa-port`; head is the V21 source commit, with a notes-only follow-up expected. Keep `s20/` untracked.
+- V20 source commit: `dda812d`; deployed and booted, no win (slow, respring, mixed pinky icons).
 - V20 log: `/home/tom/Downloads/udp-sniff-20261124-215027.txt` (69,846 lines).
-- Next work is V21 failure-reason diagnostics, not another colour guess. No V21 device push/swap/boot is approved yet.
+- V21 is a fix attempt, not a diagnostic run: raise BO limits, stop the observed NULL deref, reduce readback cost, and fix VA/accounting exhaustion. No V21 device image, push, swap or boot is approved yet.
 
 ### V20 changes
 
@@ -100,12 +99,38 @@ Fresh concise handoff, 2026-11-24. The old ~450 KB chronology was removed from t
 - Speed (88 full `|backboardd| hakios-gl: frame` summaries, frames 1–40 across three launches): mean 1.52 s/frame, median 1.09 s, range 0.17–5.29 s. Copy-out mean 339 ms (39% of frame time); IOSurface pre-time mean 242 ms, max 2.08 s. No zero-copy (`0 drawn in place` 130). Per-launch means: 1.37 s, 1.62 s, 1.73 s.
 - Presents happened: 16 `SWEET FB: swap`, 2795 `submit result`; colour/icons remain unresolved.
 
+### V21 changes (real fixes)
+
+- `xnu/patches/0112-s21-mali-iokit.sh`
+  - `SM_MAX_BO` 256 → 512: V20’s per-client `fBo` table filled with live BOs.
+  - `SM_MAX_TOTAL` 512 MiB → 768 MiB: global `sm_total` includes `CREATE_BO` and `IMPORT_USER`; 768 MiB still leaves page-table headroom in the 512-page GPU pool.
+- `tools/linux-mesa-ios/shim/s21_drm.c`
+  - Matches 512 BO slots / 768 MiB total, 128 chunks.
+  - `C.total` is now checked under `C.lock`; concurrent GL threads can no longer pass a stale unlocked value.
+  - `s21_drm_import_user()` also charges `C.total`, so imported IOSurfaces share the same budget as created BOs.
+  - VA allocator is best-fit instead of first-fit: small BOs no longer split the large hole needed for the next tiler heap.
+- `tools/linux-mesa-ios/patch_mesa_ios.py`
+  - Patches `pan_resource.c`: if `pan_alloc_staging()` returns NULL, return a failed transfer instead of dereferencing NULL. This removes the symbolicated `_panfrost_ptr_map+0x300` crash/respring.
+- `tools/linux-mesa-ios/eagl/src/eagl.c`
+  - Inverted copy-out uses one full `glReadPixels()` into a bounce buffer plus a CPU row flip; the old per-row readback remains only as a malloc-failure fallback. Targets the measured 339 ms copy-out.
+- `tools/linux-mesa-ios/shim/s21_iokit_host.c`, `host_test.c`
+  - Host model now has 512 BO slots; tests cover 300 live BOs and best-fit VA reuse.
+
+### V21 local checks already done
+
+- `git diff --check`: PASS.
+- `bash -n` on `0112-s21-mali-iokit.sh`: PASS.
+- `python3 -m py_compile patch_mesa_ios.py`: PASS.
+- `python3 patch_mesa_ios.py /tmp/opencode/mesa-v21` + `patch_mesa_g78.py`: PASS.
+- `CC=cc MESA_DIR=/tmp/opencode/mesa-v21 tools/linux-mesa-ios/shim/build-host-test.sh` → `s21-drm-host-test: PASS`.
+
 ### Next move
 
-1. Add V21 diagnostics that log the exact `CREATE_BO` rejection path before returning: requested/aligned size, `C.total`, live shim slots, `nva`, `nk`, `va_alloc` result, and which early return fired. Also log kernel `kSMCreateBO`/`kSMImportUser` rejection reasons with `sm_total` and free-slot count.
-2. Add host-test coverage for the diagnostic paths and run local checks.
-3. Push source/CI only after the V21 patch is reviewed; ask explicitly before any image build/push/swap/boot.
-4. After BO failures are identified and fixed, do a focused icon/wallpaper swizzle/plane-order attempt, then zero-copy/GPU blit for smoothness.
+1. Commit and push V21 source, then dispatch xnu and linux-mesa-ios CI.
+2. Download and verify V21 kernel + userland artifacts when green.
+3. Prepare one combined image script replacing `libgallium-26.2.4.dylib`, `libs21drm.dylib` and `libs21eagl.dylib`; keep the V21 kernel separate for the boot command.
+4. Ask explicitly before any V21 image build/push/swap. User runs sniffer first, then boots once with the V21 kernel file.
+5. Analyse V21 log for `CREATE_BO failed`, respring, EAGL markers, frame timings, icons and wallpaper. Then do zero-copy/GPU blit for smoothness if needed.
 
 ## Active device state (V20 root and kernel booted by user)
 
@@ -189,10 +214,10 @@ Good boot: GPU PASS, EAGL markers, presents, no dead injected `backboardd`, no r
 - V19 boot log: `/home/tom/Downloads/udp-sniff-20261124-204125.txt`.
 - V20 boot log: `/home/tom/Downloads/udp-sniff-20261124-215027.txt`.
 
-## Unresolved after V20 boot
+## Unresolved / to verify after V21
 
-- BO failure reason is still hidden. V21 diagnostics must distinguish shim early returns, kernel `kSMCreateBO` rejection, and `kSMImportUser` slot/total pressure before changing behaviour again.
-- Respring is caused by Mesa's NULL deref after `panfrost_resource_create_with_modifier()` returns NULL on BO allocation failure; stopping BO failures is the stability fix.
-- App icons still wrong; mixed fine/pinky icons after V20. Likely swizzle/plane order, not missing pixels.
+- Verify whether the raised BO/VA limits remove `CREATE_BO failed (err=5)` and `export failed`; do not assume until the V21 log is analysed.
+- Verify the Mesa NULL-deref fix removes the `_panfrost_ptr_map+0x300` SIGSEGV and the SpringBoard respring spiral.
+- Verify the single-readback copy-out reduces the 339 ms mean; real smoothness still needs GPU blit/zero-copy, target 10–20 fps first.
+- App icons still wrong; mixed fine/pinky icons after V20. Likely swizzle/plane order or alpha handling, not missing pixels.
 - Wallpaper red-bright-at-top is undiagnosed.
-- UI smoothness: V20 measured 1.52 s/frame mean with 339 ms CPU copy-out and 242 ms IOSurface pre-time. Need GPU blit/zero-copy for real speed; target 10–20 fps first, not 60.
