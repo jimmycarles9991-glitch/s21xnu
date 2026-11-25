@@ -33,10 +33,10 @@ Updated 2026-11-25. Keep this file short: it is the active handoff for the next 
 - Branch: `testing-mesa-port`; V22 source commit `f69330b` (`gpu ios: V22 selective flush, surface import and swizzle fixes`).
 - V21 source commit `c6cc351`; V21 CI green, artifacts verified, image built, pushed/swapped and **booted by the user**.
 - V21 result: stability improved, but still slow; icon colours still wrong; red lockscreen wallpaper remains. Not a win.
-- V22 source is complete, pushed and locally checked. V22 CI is **running**:
-  - xnu run `45596778651`
-  - linux-mesa-ios run `45596778741`
-  - head `d0ba852` on `testing-mesa-port`.
+- V22 source is complete, pushed and locally checked.
+  - xnu run `45596778651` on head `d0ba852`: **running**.
+  - First linux-mesa-ios run `45596778741` on head `d0ba852`: **failed**; `gl_s21.c` used `<IOSurface/IOSurface.h>`, which the iOS SDK exposes as `<IOSurface/IOSurfaceRef.h>` (same header `eagl.c` already uses).
+  - Fix commit `52010e9`; rerun linux-mesa-ios `45598612838` on head `52010e9`: **running**.
 - **No V22 artifacts, image, push, swap or boot has happened yet.** No V22 deployment is approved. Ask before any device write.
 - Kernel patch is unchanged for V22: the V21 kernel already implements selector 11 (`kSMSubmitList`). A V22 boot can reuse `/home/tom/Downloads/kernel-v21/kernel.development.sweet`; userland must be rebuilt from V22 source.
 
@@ -88,7 +88,7 @@ Expected outcome is uncertain: best case stable/faster with mostly correct icons
 ## Next move
 
 1. Push `testing-mesa-port`: done at head `d0ba852`.
-2. Wait for xnu `45596778651` and linux-mesa-ios `45596778741`; download artifacts and verify `SHA256SUMS` + Mach-O arm64.
+2. Wait for xnu `45596778651` and linux-mesa-ios `45598612838`; download artifacts and verify `SHA256SUMS` + Mach-O arm64. Ignore failed linux-mesa-ios `45596778741`.
 3. Ask explicit user approval before any V22 image build, push, swap, boot or active-image overwrite.
 4. If approved and device is back in Arch/Android: user runs sniffer first, then boots once with the V22 kernel/userland using the user-only command above.
 5. Analyse V22 log for `mode=list`, `mode=full`, `shared IOSurface`, `wrapped surface ... byte order`, `export failed`, `CREATE_BO failed`, respring, EAGL markers, frame/copy-out times, icons, wallpaper and visibly correct UI.
