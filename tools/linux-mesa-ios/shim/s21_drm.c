@@ -410,6 +410,59 @@ drmGetRenderDeviceNameFromFd(int fd)
    return NULL;
 }
 
+/* Forcing -DHAVE_LIBDRM also compiles Mesa's DRI/pipe-loader DRM callers, but
+ * Meson only adds pipe_loader_drm.c when it finds a real libdrm dependency.
+ * There is no KMS device on iOS, so these must link but always report failure.
+ * The opaque void * arguments keep Mesa's internal structs out of this shim;
+ * only pointer values cross the ABI. */
+int pipe_loader_drm_probe(void **devs, int ndev);
+bool pipe_loader_drm_probe_fd(void **dev, int fd, bool zink);
+const void *pipe_loader_drm_get_driconf_by_name(const char *driver_name,
+                                               unsigned *count);
+int pipe_loader_get_compatible_render_capable_device_fd(int kms_only_fd);
+int *pipe_loader_get_compatible_render_capable_device_fds(int kms_only_fd,
+                                                          unsigned int *n_devices);
+
+int
+pipe_loader_drm_probe(void **devs, int ndev)
+{
+   (void)devs; (void)ndev;
+   return 0;
+}
+
+bool
+pipe_loader_drm_probe_fd(void **dev, int fd, bool zink)
+{
+   (void)dev; (void)fd; (void)zink;
+   return false;
+}
+
+const void *
+pipe_loader_drm_get_driconf_by_name(const char *driver_name, unsigned *count)
+{
+   (void)driver_name;
+   if (count != NULL)
+      *count = 0;
+   return NULL;
+}
+
+int
+pipe_loader_get_compatible_render_capable_device_fd(int kms_only_fd)
+{
+   (void)kms_only_fd;
+   return -1;
+}
+
+int *
+pipe_loader_get_compatible_render_capable_device_fds(int kms_only_fd,
+                                                     unsigned int *n_devices)
+{
+   (void)kms_only_fd;
+   if (n_devices != NULL)
+      *n_devices = 0;
+   return NULL;
+}
+
 /* Panfrost's kmod backend uses eventfd/timerfd only for optional perf sessions.
  * Those are never enabled here; the declarations let it compile and these
  * stubs let the dylib link. */
