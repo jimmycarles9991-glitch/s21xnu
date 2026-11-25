@@ -121,11 +121,15 @@ llvm-config = ['$LLVM_CONFIG']
 
 [properties]
 sys_root = '$SDK'
+# iOS has no KMS/DRM sysfs, so Mesa's meson.build normally leaves HAVE_LIBDRM
+# undefined and compiles out all EGL_LINUX_DMA_BUF_EXT handling. The S21 port
+# supplies libdrm-shaped functions through libs21drm.dylib and fake headers in
+# $HERE/include, so define it explicitly to enable dma-buf EGLImage imports.
 c_args = ['-arch', 'arm64', '-isysroot', '$SDK', '-miphoneos-version-min=$IOS_MIN',
-          '-DS21_IOS', '-I$HERE/shim', '-I$HERE/include'
+          '-DS21_IOS', '-DHAVE_LIBDRM', '-I$HERE/shim', '-I$HERE/include'
           ${SPIRV_TOOLS_PREFIX:+, '-I$SPIRV_TOOLS_PREFIX/include'}]
 cpp_args = ['-arch', 'arm64', '-isysroot', '$SDK', '-miphoneos-version-min=$IOS_MIN',
-            '-DS21_IOS', '-I$HERE/shim', '-I$HERE/include'
+            '-DS21_IOS', '-DHAVE_LIBDRM', '-I$HERE/shim', '-I$HERE/include'
             ${SPIRV_TOOLS_PREFIX:+, '-I$SPIRV_TOOLS_PREFIX/include'}]
 c_link_args = ['-arch', 'arm64', '-isysroot', '$SDK', '-miphoneos-version-min=$IOS_MIN',
                '-L$OUT_DIR', '-ls21drm']

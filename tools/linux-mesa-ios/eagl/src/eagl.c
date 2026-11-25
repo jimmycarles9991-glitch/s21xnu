@@ -621,15 +621,14 @@ wrapped_order_of(IOSurfaceRef surface, bool target)
 	    IOSurfaceGetBytesPerElement(surface) != 4 || base == NULL || row < width * 4)
 		return WRAPPED_ABGR;
 
-	/* V25: every format-0 surface passed to -texImageIOSurface: is client
-	 * memory whose bytes are BGRA. V23 only did this for pictures at least
-	 * 100 px across, so the 28x65/28x95/28x28/6x85/6x6 Clock sub-icons were
-	 * still classified ABGR and drew with the wrong opacity byte. Attached
-	 * surfaces are different: even 100 px ones are opacity-first masks drawn
-	 * into by CoreAnimation, so keep sampling those. */
-	if (!target) {
+	/* V26: restore V23's only proven classification. Large format-0 pictures
+	 * passed to -texImageIOSurface: are client images whose bytes are BGRA;
+	 * small Clock-like masks and all attached surfaces still need the opacity
+	 * sampler. V25 forced every texImage surface to BGRA and made the frame
+	 * median worse without making the sub-icons visible, so do not repeat it. */
+	if (width >= 100 || height >= 100) {
 		if (told++ < 128)
-			say("hakios-gl: wrapped surface %u (%zux%zu, texImage) byte order: BGRA (client picture)\n",
+			say("hakios-gl: wrapped surface %u (%zux%zu, texImage) byte order: BGRA (large client picture)\n",
 			    IOSurfaceGetID(surface), width, height);
 		return WRAPPED_BGRA;
 	}
@@ -880,12 +879,6 @@ surface_to_texture(struct eagl *e, struct image *image)
 	uint8_t *base, *flipped = NULL;
 	bool alpha_first = image->alpha_first && !planar && pixel == 4;
 	bool bgra_for_rgba = image->bgra_for_rgba && !planar && pixel == 4 && image->format == GL_RGBA;
-	/* V25: BGRA client pictures and BGRA targets are uploaded as GL_BGRA.
-	 * A CPU red/blue swap into GL_RGBA changed neither the icons nor the
-	 * missing Clock sub-icons in V23/V24, so let Mesa's blue-first texture
-	 * format sample the bytes CoreAnimation actually supplied. */
-	bool native_bgra = !planar && pixel == 4 && !alpha_first &&
-	    (bgra_for_rgba || image->format == GL_BGRA);
 
 	if (image->shared) {
 		return;
@@ -895,14 +888,24 @@ surface_to_texture(struct eagl *e, struct image *image)
 		return;
 	}
 	base = planar ? IOSurfaceGetBaseAddressOfPlane(surface, image->plane) : IOSurfaceGetBaseAddress(surface);
-	if ((image->invert || alpha_first) && (flipped = calloc(row, (size_t)image->height)) != NULL) {
+	if ((image->invert || alpha_first || bgra_for_rgba) && (flipped = calloc(row, (size_t)image->height)) != NULL) {
 		for (GLsizei y = 0; y < image->height; y++) {
 			const uint8_t *from = base + row * (size_t)(image->invert ? image->height - 1 - y : y);
 			uint8_t *to = flipped + row * (size_t)y;
 			size_t used = (size_t)image->width * pixel;     /* (the last row may end where its pixels do) */
 
-			if (!alpha_first) {     /* only a vertical flip is needed */
+			if (!alpha_first && !bgra_for_rgba) {
 				memcpy(to, from, used < row ? used : row);
+				continue;
+			}
+			if (bgra_for_rgba) {
+				/* The bytes are blue, green, red, opacity although GL_RGBA was requested. */
+				for (size_t at = 0; at + 4 <= used && at + 4 <= row; at += 4) {
+					to[at] = from[at + 2];
+					to[at + 1] = from[at + 1];
+					to[at + 2] = from[at];
+					to[at + 3] = from[at + 3];
+				}
 				continue;
 			}
 			/* opacity, blue, green, red in memory: into the order OpenGL ES was told */
@@ -919,27 +922,19 @@ surface_to_texture(struct eagl *e, struct image *image)
 	glGetIntegerv(GL_UNPACK_ALIGNMENT, &alignment);
 	glPixelStorei(GL_UNPACK_ROW_LENGTH, (GLint)(row / pixel));
 	glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-	GLenum upload_format = native_bgra ? GL_BGRA : image->format;
-	GLint internal = (GLint)internal_format(native_bgra ? (GLenum)GL_BGRA : image->internal, upload_format);
+	GLint internal = (GLint)internal_format(image->internal, image->format);
 	bool reuse = image->stored_width == image->width && image->stored_height == image->height &&
-	    image->stored_internal == internal && image->stored_format == upload_format &&
+	    image->stored_internal == internal && image->stored_format == image->format &&
 	    image->stored_type == image->type;
 
-	if (bgra_for_rgba) {
-		static unsigned told;
-
-		if (told++ < 64)
-			say("hakios-gl: texture %u uses native GL_BGRA for BGRA client surface %u\n", image->texture,
-			    IOSurfaceGetID(surface));
-	}
 	if (reuse) {
-		glTexSubImage2D(image->to, 0, 0, 0, image->width, image->height, upload_format, image->type, base);
+		glTexSubImage2D(image->to, 0, 0, 0, image->width, image->height, image->format, image->type, base);
 	} else {
-		glTexImage2D(image->to, 0, internal, image->width, image->height, 0, upload_format, image->type, base);
+		glTexImage2D(image->to, 0, internal, image->width, image->height, 0, image->format, image->type, base);
 		image->stored_width = image->width;
 		image->stored_height = image->height;
 		image->stored_internal = internal;
-		image->stored_format = upload_format;
+		image->stored_format = image->format;
 		image->stored_type = image->type;
 	}
 	glPixelStorei(GL_UNPACK_ROW_LENGTH, row_length);

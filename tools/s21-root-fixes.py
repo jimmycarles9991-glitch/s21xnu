@@ -10,6 +10,8 @@
     com.apple.remotemanagementd  NSFileManager createDirectoryAtURL: nil (no system group container), every few s
     com.apple.progressd          "BUG IN CLIENT OF LIBPLATFORM: Trying to recursively lock an os_unfair_lock"
 - time zone Europe/London (/private/var/db/timezone/localtime pointed at US/Pacific: the clock read 5:11 at 22:36 KST).
+- early wall-clock restore: run /usr/bin/malinop at boot so it reads /usr/local/etc/sweet_epoch and calls settimeofday()
+  before SpringBoard. The kernel has no RTC path here, so without this the clock stays 1970 + uptime.
 - /private/var/mobile/Library/Health/Client made in advance (healthappd: "Error creating core data store directory",
   NSPOSIXErrorDomain 5 creating it at run time).
 - Safari "Fraudulent Website Warning" off: the SafeBrowsing XPC service dereferences a null
@@ -17,7 +19,27 @@
 """
 import os, plistlib, sys
 
+def _read_plist(path):
+    try:
+        with open(path, 'rb') as f:
+            return plistlib.load(f)
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        return None
+
+
 MOBILE = 501
+CLOCK_LABEL = 'com.s21.clockrestore'
+CLOCK_KEY = '/System/Library/LaunchDaemons/000.s21.clockrestore.plist'
+CLOCK_JOB = {
+    'Label': CLOCK_LABEL,
+    'ProgramArguments': ['/usr/bin/malinop'],
+    'RunAtLoad': True,
+    'KeepAlive': False,
+    'UserName': 'root',
+    'StandardOutPath': '/dev/console',
+    'StandardErrorPath': '/dev/console',
+}
+
 REMOVE = {'com.apple.remotemanagementd', 'com.apple.progressd',
           # CPU hogs on this phone (kernel cputop, run190: vmd 96 %, launchd 95 %, mediaserverd 50 %, logd 20 % of a
           # core with the home screen idle). Same set PixOS drops (sweet-root-tweaks.py DROPPED_JOBS): visual voicemail
@@ -90,18 +112,36 @@ def main(root):
     path = os.path.join(root, 'System/Library/xpc/launchd.plist')
     with open(path, 'rb') as f:
         pl = plistlib.load(f)
+    changed = False
+    if os.path.isfile(os.path.join(root, 'usr/bin/malinop')):
+        old = pl.get('LaunchDaemons', {})
+        if old.get(CLOCK_KEY) != CLOCK_JOB:
+            jobs = {CLOCK_KEY: CLOCK_JOB}
+            jobs.update({k: v for k, v in old.items() if k != CLOCK_KEY})
+            pl['LaunchDaemons'] = jobs
+            changed = True
+            print('early clock restore: malinop launchd job installed')
+        standalone = os.path.join(root, CLOCK_KEY.lstrip('/'))
+        if not os.path.exists(standalone) or _read_plist(standalone) != CLOCK_JOB:
+            os.makedirs(os.path.dirname(standalone), exist_ok=True)
+            with open(standalone, 'wb') as f:
+                plistlib.dump(CLOCK_JOB, f, fmt=plistlib.FMT_BINARY)
+            os.chmod(standalone, 0o644)
+            print('early clock restore: standalone plist installed')
+    else:
+        print('early clock restore: /usr/bin/malinop is missing; no job installed')
     removed = []
     for sect in ('LaunchDaemons', 'LaunchAgents'):
         jobs = pl.get(sect, {})
         for k in [k for k, j in jobs.items() if isinstance(j, dict) and j.get('Label') in REMOVE]:
             removed.append(jobs[k].get('Label'))
             del jobs[k]
+            changed = True
     # S21_CA_VSYNC=1: CA_FORCE_TIMER=1 in backboardd's job (as PixOS and z3sios). Despite the name, QuartzCore then
     # follows the display's vsync notifications (IOMobileFramebufferEnableVSyncNotifications, selector 72, type 5)
     # instead of its own CADisplayTimer, which on every iOS 16 chip id runs out of phase with the panel.
     # S21_CA_VSYNC=0 takes it out again; unset leaves the job as it is.
     cav = os.environ.get('S21_CA_VSYNC')
-    changed = bool(removed)
     if cav in ('0', '1'):
         for j in pl.get('LaunchDaemons', {}).values():
             if not (isinstance(j, dict) and j.get('Label') == 'com.apple.backboardd'):
