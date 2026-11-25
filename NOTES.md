@@ -49,7 +49,10 @@ Updated 2026-11-25. Keep this file short: it is the active handoff for the next 
   - `libs21drm.dylib` `7e82ccff8062413c578dea4f665a9cf0319807eefc8c5dc783fe2b84eed26ad3`
   - `libs21eagl.dylib` `cc3104e8728ee7de1dcd4bd1468b5974432dc084e5434756eb6a202aa8ce7f8b`
 - Kernel patch is unchanged for V22: the V21 kernel already implements selector 11 (`kSMSubmitList`). A V22 boot can reuse `/home/tom/Downloads/kernel-v21/kernel.development.sweet`; prefer the V22 kernel for traceability. V22 userland is already built and installed in the active image.
-- V23 source fixes `519ada5` + `fc69974` are committed. Large format-0 surfaces passed to `-texImageIOSurface:` are forced BGRA; attached format-0 masks (even 103x103/101x101 Settings/Clock-like surfaces) keep the opacity sampler. Byte-order logging now covers 128 surfaces and includes dimensions and caller. No V23 CI, artifacts, image, push/swap or boot yet.
+- V23 source fixes `519ada5` + `fc69974` are committed. Large format-0 surfaces passed to `-texImageIOSurface:` are forced BGRA; attached format-0 masks (even 103x103/101x101 Settings/Clock-like surfaces) keep the opacity sampler. Byte-order logging now covers 128 surfaces and includes dimensions and caller.
+- V23 linux-mesa-ios run `45612732388` on head `a96a603`: **success**, completed in 12m39s. Kernel/xnu CI not run; V22 kernel is reused. Artifacts verified: all 8 files Mach-O arm64; `SHA256SUMS` PASS; only `libs21eagl.dylib` differs from V22.
+- V23 `libs21eagl.dylib` SHA-256 `a12ff8d1c8e43decf7478223db6ff0e6f921b5e861ca7b92a15f03cd1bbbf16f`. `libgallium-26.2.4.dylib` and `libs21drm.dylib` remain the V22 hashes. Userland artifact: `/home/tom/Downloads/ios-mesa-g78-v23/`.
+- V23 host image and push/swap scripts are prepared but not executed: `/home/tom/Downloads/install-s21eagl-image-v23.sh` and `/home/tom/Downloads/push-and-swap-v23.sh`; both `bash -n` PASS. Image script bases on V22 and installs only V23 EAGL. Push script requires typed `SWAP_V23` and expects active V22 SHA-256 `8cf044022932213676245e5320533f6c74779a5edf6aae760f241e650646320b`.
 
 ## V21 boot result (observed, 2026-11-25)
 
@@ -111,16 +114,19 @@ Expected outcome is uncertain: best case stable/faster with mostly correct icons
 
 ## Next move
 
-1. V23 source fixes `519ada5` + `fc69974` are committed. V22 kernel/userland/image remains active and booted; no V23 CI, artifacts, image, push/swap or boot yet.
-2. Ask explicit approval for V23 CI, artifacts, image, push/swap and boot. The change is userland-only; the V22 kernel can be reused.
-3. If approved: run linux-mesa-ios CI only (xnu unchanged), verify userland artifacts, build V23 image from active V22, then prepare a typed-confirmation push/swap script. User runs sniffer first, then boots with the V22 kernel.
-4. Analyse the V23 log for `BGRA (large client picture)`, icon middle bytes, blue/yellow icons, and confirm V22's speed/stability markers have not regressed.
+1. V23 source, CI and artifacts are complete and verified. V22 kernel/userland/image remains active and booted; V23 image/push/swap scripts are prepared but not executed.
+2. User runs the image build on the host: `sudo /home/tom/Downloads/install-s21eagl-image-v23.sh`. Expected output ends with `V23_IMAGE_READY` and a new `/home/tom/ios-sweet/build/iosroot-hojun-816f870-eagl-v23.img.sha256`.
+3. User boots back to EndeavourOS/Android with SSH, then runs `/home/tom/Downloads/push-and-swap-v23.sh` and types `SWAP_V23`. This pushes/swaps only the active root image; no boot/kexec/partition/bootloader change.
+4. User runs sniffer first, then boots once with the unchanged V22 kernel:
+   - `cd /home/tom/Downloads && sudo ./sweet-usbnet-sniff.sh`
+   - `cd /home/tom/Downloads && KERNEL_SRC=/home/tom/Downloads/kernel-v22/kernel.development.sweet EXTRA="launchd_unsecure_cache=1" SWEETMETAL=1 GPUCOMP=1 ./boot-hojun-gpu.sh`
+5. Analyse the V23 log for `BGRA (large client picture)`, expanded wrapped-surface lines, icon middle bytes, blue/yellow icons, Settings/Clock sub-icons, ghosted App Library, and confirm V22's speed/stability markers have not regressed.
 
 ## Active device state
 
 - V22 was booted by the user at 2026-11-25 11:59; active root remains V22 SHA-256 `8cf044022932213676245e5320533f6c74779a5edf6aae760f241e650646320b`. The boot log shows iOS `backboardd`/SpringBoard running. Current SSH/Android state was not rechecked after boot; assume unavailable until the user boots back to EndeavourOS.
 - V22 kernel file `/home/tom/Downloads/kernel-v22/kernel.development.sweet`, SHA-256 `1607a49d53ea12c26f5a7b8b28444f39a07774424fb8690beb648fed9c0da8cd`, was used for the boot. V21 kernel SHA-256 `0bc9d5c4c73d146efaa362c363c48cdcdfae4270b244b7d0ee53406a005c8fac` also has selector 11; V22 kernel is preferred for traceability.
-- No kernel has been flashed. The active image was overwritten only after the user typed `SWAP_V22`; Android, bootloaders, recovery, modem, persist and backups were untouched. V23 is source-only so far and is not on the device.
+- No kernel has been flashed. The active image was overwritten only after the user typed `SWAP_V22`; Android, bootloaders, recovery, modem, persist and backups were untouched. V23 artifacts/scripts are ready on the host; V23 is not on the device.
 - No assistant boot/kexec/flash/partition change has happened.
 
 ## Short version history
@@ -132,7 +138,7 @@ Expected outcome is uncertain: best case stable/faster with mostly correct icons
 - V20: kernel page-table reclaim + MAP_BO rollback; no observed reclaim path, 183 `CREATE_BO failed`, respring, slow.
 - V21: BO/VA limits, Mesa NULL-deref fix, single-readback copy-out; zero `CREATE_BO failed`, stable UI, still slow, icons/red wallpaper wrong.
 - V22: selective flush + EGLImage surface sharing + content swizzle + real syncobj transfer. Booted: much faster and stable, zero `export failed`/`CREATE_BO failed`, icons nearly correct but blue/yellow swapped. Not a final win.
-- V23: source fixes only; force large `-texImageIOSurface:` client pictures to BGRA for saturated blue/yellow icons, keep attached masks on the ABGR sampler, and log byte order for 128 surfaces. Not built or booted.
+- V23: userland fix built and verified; force large `-texImageIOSurface:` client pictures to BGRA for saturated blue/yellow icons, keep attached masks on the ABGR sampler, and log byte order for 128 surfaces. Image/push scripts ready; not deployed or booted.
 
 ## Log triage checklist
 
@@ -151,7 +157,7 @@ grep -n '0x505\|0x506\|glReadPixels' LOG
 
 - Active handoff: `/home/tom/s21xnu-linux-mesa/NOTES.md`. Second copy kept in sync: `/home/tom/s21xnu-main/NOTES.md`.
 - V22 source commits: `f69330b` + build fixes `52010e9`, `2ddd129`; notes include the completed push/swap and boot result.
-- V23 source fixes: `519ada5`, `fc69974`; no V23 CI/artifacts/image/boot yet.
+- V23 source fixes: `519ada5`, `fc69974`; CI `45612732388` success; artifacts `/home/tom/Downloads/ios-mesa-g78-v23/`; no V23 image/push/swap/boot yet.
 - V22 CI: xnu `45596778651` success; linux-mesa-ios `45600557745` success. Failed attempts: `45596778741`, `45598612838`.
 - V22 boot log: `/home/tom/Downloads/udp-sniff-20261125-115921.txt`.
 - V22 artifacts: kernel `/home/tom/Downloads/kernel-v22/kernel.development.sweet` SHA-256 `1607a49d53ea12c26f5a7b8b28444f39a07774424fb8690beb648fed9c0da8cd`; userland `/home/tom/Downloads/ios-mesa-g78-v22/`.
@@ -161,6 +167,7 @@ grep -n '0x505\|0x506\|glReadPixels' LOG
 - V21 userland artifact: `/home/tom/Downloads/ios-mesa-g78-v21/`.
 - V21 image/push scripts: `/home/tom/Downloads/install-s21eagl-image-v21.sh`, `/home/tom/Downloads/push-and-swap-v21.sh`.
 - V22 host image: `/home/tom/ios-sweet/build/iosroot-hojun-816f870-eagl-v22.img`; scripts: `/home/tom/Downloads/install-s21eagl-image-v22.sh`, `/home/tom/Downloads/push-and-swap-v22.sh`.
+- V23 planned host image: `/home/tom/ios-sweet/build/iosroot-hojun-816f870-eagl-v23.img`; scripts: `/home/tom/Downloads/install-s21eagl-image-v23.sh`, `/home/tom/Downloads/push-and-swap-v23.sh`.
 - Boot script template: `/home/tom/Downloads/boot-hojun-gpu.sh`.
 - V22 edit files: `tools/linux-mesa-ios/eagl/src/eagl.c`, `tools/linux-mesa-ios/eagl/src/gl_s21.c`, `tools/linux-mesa-ios/patch_mesa_ios.py`, `tools/linux-mesa-ios/shim/{s21_drm.c,s21_drm.h,s21_iokit.h,s21_iokit_darwin.c,s21_iokit_host.c,host_test.c}`.
 - Kernel selector 11 ABI reference: `xnu/patches/0112-s21-mali-iokit.sh` (unchanged).
