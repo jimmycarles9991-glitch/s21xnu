@@ -38,7 +38,7 @@ Updated 2026-11-25. Keep this file short: it is the active handoff for the next 
   - First linux-mesa-ios run `45596778741` on head `d0ba852`: **failed**; `gl_s21.c` used `<IOSurface/IOSurface.h>`, which the iOS SDK exposes as `<IOSurface/IOSurfaceRef.h>` (same header `eagl.c` already uses).
   - Fix commit `52010e9`; linux-mesa-ios rerun `45598612838` also **failed**: `gl_s21.c` could not find the fake `<xf86drm.h>` because the EAGL compile lacked `-I$HERE/include`.
   - Fix commit `2ddd129` adds that include path; linux-mesa-ios `45600557745` on head `2ddd129`: **success**, completed `2026-11-25T11:11:10Z`. Host test passed inside CI.
-- V22 host image built by the user; push/swap executed by the user with typed `SWAP_V22`. Active root is now V22. User approved V22 boot on 2026-11-25; **no V22 boot has happened yet**. User must run sniffer and boot; assistant must not boot.
+- V22 host image built by the user; push/swap executed by the user with typed `SWAP_V22`. User booted V22 on 2026-11-25; log `/home/tom/Downloads/udp-sniff-20261125-115921.txt`. Speed/stability improved and icons are nearly correct, but blue/yellow icons are swapped. Not a final win.
 - V22 image `/home/tom/ios-sweet/build/iosroot-hojun-816f870-eagl-v22.img`: SHA-256 `8cf044022932213676245e5320533f6c74779a5edf6aae760f241e650646320b`, 17,179,869,184 B, `root:root 644`; pre/post `fsck.hfsplus` OK.
 - Device swap: rsync 17,179,869,184 B at 23.59 MB/s in 11m34s; stage hash verified; F2FS GC 9982 → 10051 free segments; sequential `dd` in 183 s at 93.9 MB/s; printed `ACTIVE_V22_READY`.
 - Independent read-only recheck: active SHA-256 `8cf044022932213676245e5320533f6c74779a5edf6aae760f241e650646320b`, `root:root 644`, `extents=3797`, `free_segments=10050`, tunables `2048`/`0`.
@@ -49,6 +49,7 @@ Updated 2026-11-25. Keep this file short: it is the active handoff for the next 
   - `libs21drm.dylib` `7e82ccff8062413c578dea4f665a9cf0319807eefc8c5dc783fe2b84eed26ad3`
   - `libs21eagl.dylib` `cc3104e8728ee7de1dcd4bd1468b5974432dc084e5434756eb6a202aa8ce7f8b`
 - Kernel patch is unchanged for V22: the V21 kernel already implements selector 11 (`kSMSubmitList`). A V22 boot can reuse `/home/tom/Downloads/kernel-v21/kernel.development.sweet`; prefer the V22 kernel for traceability. V22 userland is already built and installed in the active image.
+- V23 source fix `519ada5` (`eagl: V23 read large format-0 client pictures as BGRA`) is committed and pushed. It forces format-0 surfaces with width or height >= 100 to BGRA, while keeping the opacity sampler for small tinted masks. No V23 CI, artifacts, image, push/swap or boot yet.
 
 ## V21 boot result (observed, 2026-11-25)
 
@@ -61,6 +62,18 @@ Updated 2026-11-25. Keep this file short: it is the active handoff for the next 
 - Copy-out: mean `312,143 us`, median `327,909 us`, 28.1% of frame time. IOSurface pre-time mean `172,690 us`. Copy-out is no longer dominant, but the path is still far too slow.
 - Icon observation: 180×180, format `0x1908`/type `0x1401`, 720 bytes a row, often 31,092/32,400 pixels lit. Logged middle pixels after V21 conversion include `ff ff ff ff`, `ff cc c7 c7`, `ff 5e 42 fd`, `ff f7 9c 1b` — pink/orange results. Hypothesis (not yet proven): source bytes are BGRA and V21's blanket ABGR assumption swizzled them wrongly.
 - Display targets observed as `'BGRA'`, 1125×2436, 4,608 bytes a row. These are the intended V22 EGLImage/dma-buf import candidates.
+
+## V22 boot result (observed, 2026-11-25)
+
+- Log: `/home/tom/Downloads/udp-sniff-20261125-115921.txt` (27,259 lines / 2,246,876 bytes).
+- User: “OK YES FASTER BUT ICONS ALMOST THERE CUZ BLUE SHOWS AS YELLOW AND YELLOW SHOWS AS BLUE”.
+- Gate/UI markers: EAGL injection pid 58 line `471`; `S21GPU: clear PASS` line `768`; 8/8 EAGL methods replaced lines `954-962`; `SWEET FB: swap` 16; `submit result` 993.
+- Selective flush worked: 993/993 submits `mode=list`, zero `mode=full`. Zero `export failed`, `CREATE_BO failed`, `pool exhausted`, `bo map failed`, `panfrost_batch_init failed`, `0x505`, `0x506`. No backboardd/SpringBoard crash and no respring. The 10 `EXC_CORPSE_NOTIFY` entries are other daemons (widget check-in timeouts, `contextstored` non-fatal `EXC_RESOURCE`, etc.).
+- EGLImage/PRIME sharing did not engage: zero `shared IOSurface` lines; wrapped surfaces used the CPU upload path. The speed gain came from the submit/fence path, not zero-copy.
+- Frame summaries: 40 frames; mean `422,309 us` (V21 `1,109,026 us`), median `360,710 us` (V21 `571,501 us`), min `225,855 us`, max `1,031,407 us` (V21 max `4,983,583 us`). Steady frames 34-38 were `264-270 ms` (~3.7 fps).
+- Copy-out: mean `244,995 us` / 58.0% of frame time (V21 `312,143 us` / 28.1%); IOSurface pre-time mean `127,949 us`. Copy-out is now the main remaining cost.
+- Colour: first 24 unique wrapped surfaces logged; 18 BGRA and 6 ABGR (36/12 log lines because each message is duplicated). Large 180x180 icons were almost all BGRA; surface 15 hit the 985/985 opacity tie and was classified ABGR (`ff 2a 2e ff`). Small 28x65/28x95/28x28/6x85/6x6 masks were ABGR and should stay ABGR.
+- V22 corrected most icon colours versus V21: the same source bytes that V21 logged as `ff 5e 42 fd` and `ff cc c7 c7` became `5e 42 fd ff` and `cc c7 c7 ff`. The remaining blue/yellow swap is consistent with the opacity heuristic tying on saturated icons. V23 forces format-0 surfaces with width or height >= 100 to BGRA and keeps the sampler for small masks.
 
 ## V22 combined attempt
 
@@ -97,18 +110,16 @@ Expected outcome is uncertain: best case stable/faster with mostly correct icons
 
 ## Next move
 
-1. Source, CI, artifacts, host image and user-approved push/swap are complete. Ignore failed linux-mesa-ios runs `45596778741` and `45598612838`.
-2. User approved boot on 2026-11-25. V22 is active on disk, but it has not been booted.
-3. User runs sniffer first, then boots once with V22:
-   - `cd /home/tom/Downloads && sudo ./sweet-usbnet-sniff.sh`
-   - `cd /home/tom/Downloads && KERNEL_SRC=/home/tom/Downloads/kernel-v22/kernel.development.sweet EXTRA="launchd_unsecure_cache=1" SWEETMETAL=1 GPUCOMP=1 ./boot-hojun-gpu.sh`
-4. Analyse V22 log for `mode=list`, `mode=full`, `shared IOSurface`, `wrapped surface ... byte order`, `export failed`, `CREATE_BO failed`, respring, EAGL markers, frame/copy-out times, icons, wallpaper and visibly correct UI.
+1. V23 source fix `519ada5` is committed and pushed. V22 kernel/userland/image remains active and booted; no V23 CI, artifacts, image, push/swap or boot yet.
+2. Ask explicit approval for V23 CI, artifacts, image, push/swap and boot. The change is userland-only; the V22 kernel can be reused.
+3. If approved: run linux-mesa-ios CI only (xnu unchanged), verify userland artifacts, build V23 image from active V22, then prepare a typed-confirmation push/swap script. User runs sniffer first, then boots with the V22 kernel.
+4. Analyse the V23 log for `BGRA (large client picture)`, icon middle bytes, blue/yellow icons, and confirm V22's speed/stability markers have not regressed.
 
 ## Active device state
 
-- Observed 2026-11-25 after the user-run push/swap: device was in EndeavourOS with SSH; active `/mnt/android-data/linux/iosroot.img` is V22, SHA-256 `8cf044022932213676245e5320533f6c74779a5edf6aae760f241e650646320b`, 17,179,869,184 B, `root:root 644`; `extents=3797`, `free_segments=10050`, tunables `gc_pin_file_thresh=2048`/`gc_urgent=0`; `/mnt/android-data` had 30G free at 73% use.
-- V22 kernel file: `/home/tom/Downloads/kernel-v22/kernel.development.sweet`, SHA-256 `1607a49d53ea12c26f5a7b8b28444f39a07774424fb8690beb648fed9c0da8cd`; not booted yet. V21 kernel SHA-256 `0bc9d5c4c73d146efaa362c363c48cdcdfae4270b244b7d0ee53406a005c8fac` also has selector 11; prefer V22 for traceability.
-- No kernel has been flashed. V22 boot is approved but not executed. The active image was overwritten only after the user typed `SWAP_V22`; Android, bootloaders, recovery, modem, persist and backups were untouched.
+- V22 was booted by the user at 2026-11-25 11:59; active root remains V22 SHA-256 `8cf044022932213676245e5320533f6c74779a5edf6aae760f241e650646320b`. The boot log shows iOS `backboardd`/SpringBoard running. Current SSH/Android state was not rechecked after boot; assume unavailable until the user boots back to EndeavourOS.
+- V22 kernel file `/home/tom/Downloads/kernel-v22/kernel.development.sweet`, SHA-256 `1607a49d53ea12c26f5a7b8b28444f39a07774424fb8690beb648fed9c0da8cd`, was used for the boot. V21 kernel SHA-256 `0bc9d5c4c73d146efaa362c363c48cdcdfae4270b244b7d0ee53406a005c8fac` also has selector 11; V22 kernel is preferred for traceability.
+- No kernel has been flashed. The active image was overwritten only after the user typed `SWAP_V22`; Android, bootloaders, recovery, modem, persist and backups were untouched. V23 is source-only so far and is not on the device.
 - No assistant boot/kexec/flash/partition change has happened.
 
 ## Short version history
@@ -119,7 +130,8 @@ Expected outcome is uncertain: best case stable/faster with mostly correct icons
 - V19: colour fix; normal colours except icons, but BO pool exhaustion and respring.
 - V20: kernel page-table reclaim + MAP_BO rollback; no observed reclaim path, 183 `CREATE_BO failed`, respring, slow.
 - V21: BO/VA limits, Mesa NULL-deref fix, single-readback copy-out; zero `CREATE_BO failed`, stable UI, still slow, icons/red wallpaper wrong.
-- V22: selective flush + EGLImage surface sharing + content swizzle + real syncobj transfer. Local checks and CI green; host image built/verified; push/swap done by user; boot approved by user but not executed yet.
+- V22: selective flush + EGLImage surface sharing + content swizzle + real syncobj transfer. Booted: much faster and stable, zero `export failed`/`CREATE_BO failed`, icons nearly correct but blue/yellow swapped. Not a final win.
+- V23: source fix only; force large format-0 client pictures to BGRA so saturated blue/yellow icons are not misread as ABGR. Committed/pushed, not built or booted.
 
 ## Log triage checklist
 
@@ -127,7 +139,7 @@ Expected outcome is uncertain: best case stable/faster with mostly correct icons
 grep -n 'pool exhausted\|bo map failed\|CREATE_BO failed\|export failed\|panfrost_batch_init failed' LOG
 grep -n 'EXC_CORPSE_NOTIFY\|crash: backboardd\|CRASH backboardd\|respring' LOG
 grep -n 'S21EAGL-kernel\|EAGLContext\|hakios-gl: frame\|SWEET FB: swap\|submit result' LOG
-grep -n 'S21DRM: submit .* mode=\|shared IOSurface\|wrapped surface .* byte order' LOG
+grep -n 'S21DRM: submit .* mode=\|shared IOSurface\|wrapped surface .* byte order\|large client picture' LOG
 grep -n 'SWEET SURF: pixels\|0 drawn in place\|S21GPU: clear PASS' LOG
 grep -n '0x505\|0x506\|glReadPixels' LOG
 ```
@@ -137,8 +149,10 @@ grep -n '0x505\|0x506\|glReadPixels' LOG
 ## Key files and artifacts
 
 - Active handoff: `/home/tom/s21xnu-linux-mesa/NOTES.md`. Second copy kept in sync: `/home/tom/s21xnu-main/NOTES.md`.
-- V22 source commits: `f69330b` + build fixes `52010e9`, `2ddd129`; active handoff includes the completed push/swap deployment result.
+- V22 source commits: `f69330b` + build fixes `52010e9`, `2ddd129`; notes include the completed push/swap and boot result.
+- V23 source fix: `519ada5`; no V23 CI/artifacts/image/boot yet.
 - V22 CI: xnu `45596778651` success; linux-mesa-ios `45600557745` success. Failed attempts: `45596778741`, `45598612838`.
+- V22 boot log: `/home/tom/Downloads/udp-sniff-20261125-115921.txt`.
 - V22 artifacts: kernel `/home/tom/Downloads/kernel-v22/kernel.development.sweet` SHA-256 `1607a49d53ea12c26f5a7b8b28444f39a07774424fb8690beb648fed9c0da8cd`; userland `/home/tom/Downloads/ios-mesa-g78-v22/`.
 - V21 source commit: `c6cc351`; CI xnu `45577164674`, linux-mesa-ios `45577164974`.
 - V21 log: `/home/tom/Downloads/udp-sniff-20261125-093638.txt`.
