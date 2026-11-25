@@ -33,8 +33,11 @@ Updated 2026-11-25. Keep this file short: it is the active handoff for the next 
 - Branch: `testing-mesa-port`; V22 source commit `f69330b` (`gpu ios: V22 selective flush, surface import and swizzle fixes`).
 - V21 source commit `c6cc351`; V21 CI green, artifacts verified, image built, pushed/swapped and **booted by the user**.
 - V21 result: stability improved, but still slow; icon colours still wrong; red lockscreen wallpaper remains. Not a win.
-- V22 source is complete and locally checked. **No V22 CI, image, push, swap or boot has happened yet.**
-- No V22 deployment is approved. Ask before any device write.
+- V22 source is complete, pushed and locally checked. V22 CI is **running**:
+  - xnu run `45596778651`
+  - linux-mesa-ios run `45596778741`
+  - head `d0ba852` on `testing-mesa-port`.
+- **No V22 artifacts, image, push, swap or boot has happened yet.** No V22 deployment is approved. Ask before any device write.
 - Kernel patch is unchanged for V22: the V21 kernel already implements selector 11 (`kSMSubmitList`). A V22 boot can reuse `/home/tom/Downloads/kernel-v21/kernel.development.sweet`; userland must be rebuilt from V22 source.
 
 ## V21 boot result (observed, 2026-11-25)
@@ -84,8 +87,8 @@ Expected outcome is uncertain: best case stable/faster with mostly correct icons
 
 ## Next move
 
-1. Push `testing-mesa-port`.
-2. Dispatch xnu and linux-mesa-ios CI on V22 head; download artifacts and verify `SHA256SUMS` + Mach-O arm64.
+1. Push `testing-mesa-port`: done at head `d0ba852`.
+2. Wait for xnu `45596778651` and linux-mesa-ios `45596778741`; download artifacts and verify `SHA256SUMS` + Mach-O arm64.
 3. Ask explicit user approval before any V22 image build, push, swap, boot or active-image overwrite.
 4. If approved and device is back in Arch/Android: user runs sniffer first, then boots once with the V22 kernel/userland using the user-only command above.
 5. Analyse V22 log for `mode=list`, `mode=full`, `shared IOSurface`, `wrapped surface ... byte order`, `export failed`, `CREATE_BO failed`, respring, EAGL markers, frame/copy-out times, icons, wallpaper and visibly correct UI.
