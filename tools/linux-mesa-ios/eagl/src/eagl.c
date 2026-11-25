@@ -47,8 +47,12 @@
  * left in the middle of itself; gltrace_shaders=1 writes down the text of the shaders of every
  * program a traced draw uses, the first time it draws, gltrace_uniforms=1 what every traced draw
  * gave its program, by the names the shaders use, gltrace_corners=N how many of a draw's corners
- * to write down (twelve by default); glcensus=1 keeps count of the draws CoreAnimation makes with no
- * program and of the functions it asks for in vain (see census_draw()); glshaders=1 writes down
+ * to write down (twelve by default); V28 writes down the shaders attached to each program at link
+ * time, and glcolorfix=0 turns off its two shader variants (see program_variants()): alpha-only
+ * tint programs get an RGB variant for full app icons, and squareImage-mask programs get an
+ * unmasked variant for small wrapped sub-icon pictures; glcensus=1 keeps count of the draws
+ * CoreAnimation makes with no program and of the functions it asks for in vain (see census_draw());
+ * glshaders=1 writes down
  * the text of every shader, glshow=TEXTURE (or WxH, with glshow_part=W,H and glshow_zoom=N) puts that texture over the corner of the picture, glplain=0 leaves the
  * draws without a program alone, glskip=N[,N...] leaves out the draws of those programs (see skip_draw()), glcopy=1 copies every IOSurface as if the library could not
  * share one, glwait=1 waits for the GPU at the end of every frame and glwait=0 never (see
@@ -222,6 +226,7 @@ struct group_texture {
 	GLfloat colours[20];            /* ... and that layer's colour matrix */
 };
 static int group_vibrant_on = 1;        /* boot-arg glgroup=0 */
+static int icon_rgb_fix = 1;            /* boot-arg glcolorfix=0 turns off both V28 variants */
 static unsigned group_covered, group_laid, group_flattened;    /* (glframes=1) this frame's */
 
 /* A texture that stands for an IOSurface. */
@@ -323,6 +328,11 @@ struct eagl {
 	unsigned most_calls, most_triangles;
 	const char *sources[256];       /* the text of the shaders being made, by name (modulo this) */
 	bool fragment[256];             /* ... and which of the two kinds each is */
+	/* V28: which shaders CoreAnimation attached to each program, and our variants of them */
+	GLuint program_vertex[256], program_fragment[256];
+	GLuint alpha_variant[256];      /* an alpha-only tint program, with texture RGB instead of alpha */
+	GLuint square_variant[256];     /* a squareImage-mask program, without the mask */
+	GLuint draw_variant;            /* the variant to use for the draw at hand, if any */
 	unsigned plain_said;
 };
 
@@ -343,6 +353,9 @@ static float trace_middle[2];                   /* ... which is here, as CoreAni
 static int trace_listed;                        /* the draw at hand is one of them */
 static int all_shaders;                         /* boot-arg glshaders=1: the text of every shader, not of the first two */
 static struct group_texture *group_of(struct eagl *e, GLuint texture);
+static void program_variants(struct eagl *e, GLuint program, GLuint *shaders, GLsizei count);
+static GLuint draw_variant_begin(struct eagl *e);
+static void draw_variant_end(struct eagl *e, GLuint variant);
 static __thread struct eagl *current;
 static struct eagl *contexts[8];
 static uint32_t slot_calls[SLOTS];
@@ -1483,6 +1496,7 @@ drawing(struct eagl *e)
 	struct image *image;
 
 	frame_begin(e);
+	e->draw_variant = 0;
 	if (e->bound[0] != 0 && (image = image_of(e, e->bound[0])) != NULL && !image->target &&
 	    ((image->width == image->height && image->width >= 100 && image->width <= 200) || image->width >= 900)) {
 		/* (Galaxy S7 port) an icon's picture, or one of a wallpaper's size, is drawn: into what, and how */
@@ -1490,6 +1504,9 @@ drawing(struct eagl *e)
 		struct image *into = e->colour != 0 ? image_of(e, e->colour) : NULL;
 		GLint viewport[4] = { 0, 0, 0, 0 }, scissor[4] = { 0, 0, 0, 0 };
 
+		if (image->width == image->height && image->width >= 100 && image->width <= 200 && e->program != 0) {
+			e->draw_variant = e->alpha_variant[e->program % 256];
+		}
 		if (image->width >= 900 ? told_large++ < 16 : told++ < 40) {
 			glGetIntegerv(GL_VIEWPORT, viewport);
 			glGetIntegerv(GL_SCISSOR_BOX, scissor);
@@ -1499,6 +1516,21 @@ drawing(struct eagl *e)
 			    "shown") : "", into != NULL ? into->width : 0, into != NULL ? into->height : 0, viewport[0], viewport[1], viewport[2],
 			    viewport[3], glIsEnabled(GL_SCISSOR_TEST) ? "on" : "off", scissor[0], scissor[1], scissor[2], scissor[3],
 			    glIsEnabled(GL_BLEND) ? "on" : "off", e->frames + 1);
+		}
+	}
+	if (e->bound[0] != 0 && (image = image_of(e, e->bound[0])) != NULL && !image->target && image->wrapped &&
+	    image->width > 0 && image->width <= 100 && image->height > 0 && image->height <= 100) {
+		static unsigned told_small;
+
+		if (e->program != 0) {
+			e->draw_variant = e->square_variant[e->program % 256];
+		}
+		if (told_small++ < 80) {
+			say("hakios-gl: V28: small picture %d x %d (surface %u, texture %u) drawn by program %u, fragment shader %u "
+			    "into framebuffer %u, frame %u%s%s\n", image->width, image->height, IOSurfaceGetID(image->surface),
+			    e->bound[0], e->program, e->program_fragment[e->program % 256], e->framebuffer, e->frames + 1,
+			    e->draw_variant != 0 ? ", unmasked variant" : "", e->draw_variant == 0 && e->square_variant[e->program % 256] != 0 ?
+			    ", variant available" : "");
 		}
 	}
 	if (e->framebuffer != 0 && e->colour != 0 && (image = image_of(e, e->colour)) != NULL && image->target) {
@@ -3557,6 +3589,7 @@ my_glDrawArrays(void *context, GLenum mode, GLint first, GLsizei count)
 {
 	struct eagl *e = context;
 	GLint enabled[4] = { 1, 1, 1, 1 };
+	GLuint variant;
 	bool plain;
 
 	EAGL_ENTER(e, 0x210);
@@ -3571,6 +3604,7 @@ my_glDrawArrays(void *context, GLenum mode, GLint first, GLsizei count)
 	if (trace_placing) {
 		trace_placed_draw(e, mode, 0, NULL, first, count);
 	}
+	variant = draw_variant_begin(e);
 	if (skipping != 0 && skip_draw(e)) {
 		/* glskip=N: nothing is drawn, so that what this program puts there can be seen missing */
 	} else if (group_draw_begin(e, enabled)) {
@@ -3583,6 +3617,7 @@ my_glDrawArrays(void *context, GLenum mode, GLint first, GLsizei count)
 			plain_draw_end(e, enabled);
 		}
 	}
+	draw_variant_end(e, variant);
 	if (trace_listed) {
 		trace_placed_look(e);
 	}
@@ -3597,6 +3632,7 @@ my_glDrawElements(void *context, GLenum mode, GLsizei count, GLenum type, const 
 {
 	struct eagl *e = context;
 	GLint enabled[4] = { 1, 1, 1, 1 };
+	GLuint variant;
 	bool plain;
 
 	EAGL_ENTER(e, 0x220);
@@ -3611,6 +3647,7 @@ my_glDrawElements(void *context, GLenum mode, GLsizei count, GLenum type, const 
 	if (trace_placing) {
 		trace_placed_draw(e, mode, type, indices, 0, count);
 	}
+	variant = draw_variant_begin(e);
 	if (skipping != 0 && skip_draw(e)) {
 		/* glskip=N: see my_glDrawArrays */
 	} else if (group_draw_begin(e, enabled)) {
@@ -3623,6 +3660,7 @@ my_glDrawElements(void *context, GLenum mode, GLsizei count, GLenum type, const 
 			plain_draw_end(e, enabled);
 		}
 	}
+	draw_variant_end(e, variant);
 	if (trace_listed) {
 		trace_placed_look(e);
 	}
@@ -4146,26 +4184,29 @@ my_glCreateShader(void *context, GLenum type)
 }
 
 /*
- * CoreAnimation does not ask whether its shaders compiled. Here it is asked, and what the
- * compiler said is written down with the shader's text.
+ * The words CoreAnimation writes and the words GLSL 3.00 wants, for one shader. V28 uses this
+ * for its own variants as well as for CoreAnimation's shaders, so that a modified shader goes
+ * through exactly the same extensions, precision and framebuffer-fetch treatment.
  */
-static void
-my_glShaderSource(void *context, GLuint shader, GLsizei count, const GLchar *const *strings, const GLint *lengths)
+static char *
+shader_text(struct eagl *e, GLuint shader, const GLchar *const *strings, GLsizei count, const GLint *lengths,
+    const GLchar *parts[6])
 {
-	struct eagl *e = context;
 	bool fragment = e->fragment[shader % 256], fetch;
-	const GLchar *parts[6] = { "#version 300 es\n", fragment ? fragment_start : vertex_start, "", NULL, "",
-		                   full_precision ? all_highp : "" };
-	size_t size = 1, extensions = 0;
+	size_t size = 1;
 	char *text, *line, *head;
 
-	EAGL_ENTER(e, 0x12a0);
+	parts[0] = "#version 300 es\n";
+	parts[1] = fragment ? fragment_start : vertex_start;
+	parts[2] = "";
+	parts[3] = NULL;
+	parts[4] = "";
+	parts[5] = full_precision ? all_highp : "";
 	for (GLsizei i = 0; i < count; i++) {
 		size += lengths != NULL && lengths[i] >= 0 ? (size_t)lengths[i] : strlen(strings[i]);
 	}
 	if ((text = calloc(1, 2 * size + 64)) == NULL) {
-		glShaderSource(shader, count, strings, lengths);
-		return;
+		return NULL;
 	}
 	for (GLsizei i = 0; i < count; i++) {
 		strncat(text, strings[i], lengths != NULL && lengths[i] >= 0 ? (size_t)lengths[i] : strlen(strings[i]));
@@ -4179,7 +4220,6 @@ my_glShaderSource(void *context, GLuint shader, GLsizei count, const GLchar *con
 		strncat(head, line, length);
 		strcat(head, "\n");
 		line[0] = line[1] = '/';
-		extensions++;
 	}
 	parts[0] = head;
 	parts[3] = text;
@@ -4187,6 +4227,25 @@ my_glShaderSource(void *context, GLuint shader, GLsizei count, const GLchar *con
 		fetch = strstr(text, "gl_LastFragData") != NULL;
 		parts[2] = fetch ? fragment_fetch : fragment_plain;
 		parts[4] = fetch ? fragment_fetch_end : fragment_plain_end;
+	}
+	return text;
+}
+
+/*
+ * CoreAnimation does not ask whether its shaders compiled. Here it is asked, and what the
+ * compiler said is written down with the shader's text.
+ */
+static void
+my_glShaderSource(void *context, GLuint shader, GLsizei count, const GLchar *const *strings, const GLint *lengths)
+{
+	struct eagl *e = context;
+	const GLchar *parts[6];
+	char *text;
+
+	EAGL_ENTER(e, 0x12a0);
+	if ((text = shader_text(e, shader, strings, count, lengths, parts)) == NULL) {
+		glShaderSource(shader, count, strings, lengths);
+		return;
 	}
 	free((void *)e->sources[shader % 256]);
 	e->sources[shader % 256] = text;
@@ -4228,6 +4287,243 @@ my_glCompileShader(void *context, GLuint shader)
 	EAGL_LEAVE(e, 0x12a8);
 }
 
+/* ---- V28 shader variants --------------------------------------------------------------------------
+ *
+ * Two of CoreAnimation's fragment shaders lose the picture's own colour: an alpha-only tint
+ * (`color * vec4(t0.a)`) and a squareImage mask (`color * s0 * s1.a`). The first is right for a
+ * tint mask but wrong for a full app icon; the second is right for rounded corners but appears
+ * to erase some small sub-icons here. Keep CoreAnimation's program untouched and make a variant
+ * of the fragment shader for those two cases only. The program→shader log below is what proves
+ * which program each variant belongs to, instead of guessing at a byte swap.
+ */
+#define GL_INT_VEC2             0x8b53
+#define GL_INT_VEC3             0x8b54
+#define GL_INT_VEC4             0x8b55
+#define GL_BOOL_VEC2            0x8b57
+#define GL_BOOL_VEC3            0x8b58
+#define GL_BOOL_VEC4            0x8b59
+
+/* Change one whole assignment line, without touching the rest of CoreAnimation's text. */
+static char *
+replace_assignment(const char *source, const char *needle, const char *replacement)
+{
+	const char *at = strstr(source, needle);
+	size_t before, old = strlen(needle), new_length = strlen(replacement), rest;
+	char *copy;
+
+	if (at == NULL) {
+		return NULL;
+	}
+	before = (size_t)(at - source);
+	rest = strlen(at + old);
+	if ((copy = malloc(before + new_length + rest + 1)) == NULL) {
+		return NULL;
+	}
+	memcpy(copy, source, before);
+	memcpy(copy + before, replacement, new_length);
+	memcpy(copy + before + new_length, at + old, rest + 1);
+	return copy;
+}
+
+static char *
+alpha_rgb_source(const char *source)
+{
+	if (strstr(source, "vec4(t0.a)") == NULL) {
+		return NULL;
+	}
+	return replace_assignment(source, "gl_FragData[0] = color * s0;",
+	    "gl_FragData[0] = color * vec4(t0.rgb, t0.a);");
+}
+
+static char *
+square_plain_source(const char *source)
+{
+	if (strstr(source, "squareImage") == NULL) {
+		return NULL;
+	}
+	return replace_assignment(source, "gl_FragData[0] = color * s0 * s1.a;", "gl_FragData[0] = color * s0;");
+}
+
+/* A variant has its own uniform locations: give it what CoreAnimation just gave the original. */
+static void
+copy_uniforms(GLuint from, GLuint to)
+{
+	GLint count = 0;
+
+	glGetProgramiv(from, GL_ACTIVE_UNIFORMS, &count);
+	for (GLint i = 0; i < count; i++) {
+		char name[128] = "";
+		GLint size = 0, src, dst;
+		GLenum type = 0;
+		unsigned floats;
+
+		glGetActiveUniform(from, (GLuint)i, (GLsizei)sizeof(name), NULL, &size, &type, name);
+		src = glGetUniformLocation(from, name);
+		dst = glGetUniformLocation(to, name);
+		if (src < 0 || dst < 0) {
+			continue;
+		}
+		floats = uniform_floats(type);
+		for (GLint k = 0; k < size && k < 8; k++) {
+			if (floats != 0) {
+				GLfloat value[16] = { 0 };
+
+				glGetUniformfv(from, src + k, value);
+				if (type == GL_FLOAT_MAT2) {
+					glUniformMatrix2fv(dst + k, 1, 0, value);
+				} else if (type == GL_FLOAT_MAT3) {
+					glUniformMatrix3fv(dst + k, 1, 0, value);
+				} else if (type == GL_FLOAT_MAT4) {
+					glUniformMatrix4fv(dst + k, 1, 0, value);
+				} else {
+					switch (floats) {
+					case 1: glUniform1fv(dst + k, 1, value); break;
+					case 2: glUniform2fv(dst + k, 1, value); break;
+					case 3: glUniform3fv(dst + k, 1, value); break;
+					case 4: glUniform4fv(dst + k, 1, value); break;
+					default: break;
+					}
+				}
+			} else {
+				GLint value[4] = { 0 };
+
+				glGetUniformiv(from, src + k, value);
+				switch (type) {
+				case GL_INT_VEC2: case GL_BOOL_VEC2: glUniform2iv(dst + k, 1, value); break;
+				case GL_INT_VEC3: case GL_BOOL_VEC3: glUniform3iv(dst + k, 1, value); break;
+				case GL_INT_VEC4: case GL_BOOL_VEC4: glUniform4iv(dst + k, 1, value); break;
+				default: glUniform1iv(dst + k, 1, value); break;
+				}
+			}
+		}
+	}
+}
+
+static GLuint
+make_variant(struct eagl *e, GLuint program, GLuint vertex, GLuint fragment, char *source, const char *what)
+{
+	static const char *const attributes[] = {
+		"vertex_position", "vertex_color", "vertex_texcoord0", "vertex_texcoord1", "vertex_normal"
+	};
+	const GLchar *parts[6], *strings[1] = { source };
+	GLuint shader, variant;
+	GLint good = 0;
+	char said[1024] = "";
+
+	if (vertex == 0 || (shader = glCreateShader(GL_FRAGMENT_SHADER)) == 0) {
+		free(source);
+		return 0;
+	}
+	e->fragment[shader % 256] = true;
+	if (shader_text(e, shader, strings, 1, NULL, parts) == NULL) {
+		glDeleteShader(shader);
+		free(source);
+		return 0;
+	}
+	free((void *)e->sources[shader % 256]);
+	e->sources[shader % 256] = source;
+	glShaderSource(shader, 6, (const GLchar *const[6]){ parts[0], parts[5], parts[1], parts[2], parts[3], parts[4] }, NULL);
+	glCompileShader(shader);
+	glGetShaderiv(shader, GL_COMPILE_STATUS, &good);
+	if (!good) {
+		glGetShaderInfoLog(shader, sizeof(said), NULL, said);
+		say("hakios-gl: V28: %s fragment does not compile: %s\n", what, said);
+		glDeleteShader(shader);
+		return 0;
+	}
+	variant = glCreateProgram();
+	glAttachShader(variant, vertex);
+	glAttachShader(variant, shader);
+	for (unsigned i = 0; i < sizeof(attributes) / sizeof(attributes[0]); i++) {
+		GLint place = glGetAttribLocation(program, attributes[i]);
+
+		if (place >= 0) {
+			glBindAttribLocation(variant, (GLuint)place, attributes[i]);
+		}
+	}
+	glLinkProgram(variant);
+	glGetProgramiv(variant, GL_LINK_STATUS, &good);
+	if (!good) {
+		glGetProgramInfoLog(variant, sizeof(said), NULL, said);
+		say("hakios-gl: V28: %s program does not link: %s\n", what, said);
+		glDeleteProgram(variant);
+		glDeleteShader(shader);
+		return 0;
+	}
+	say("hakios-gl: V28: program %u: %s program %u (shaders %u/%u, fragment shader %u)\n", program, what, variant,
+	    vertex, fragment, shader);
+	return variant;
+}
+
+static void
+program_variants(struct eagl *e, GLuint program, GLuint *shaders, GLsizei count)
+{
+	char ids[160] = "";
+	size_t used = 0;
+	GLuint vertex = 0, fragment = 0;
+	const char *source;
+
+	for (GLsizei i = 0; i < count; i++) {
+		used += (size_t)snprintf(ids + used, sizeof(ids) - used, "%s%u", i == 0 ? "" : ",", shaders[i]);
+		if (e->fragment[shaders[i] % 256]) {
+			if (fragment == 0) {
+				fragment = shaders[i];
+			}
+		} else if (vertex == 0) {
+			vertex = shaders[i];
+		}
+	}
+	say("hakios-gl: V28: program %u: %d attached shaders [%s]; vertex %u, fragment %u\n", program, count, ids, vertex,
+	    fragment);
+	if (program >= 256) {
+		return;
+	}
+	e->program_vertex[program % 256] = vertex;
+	e->program_fragment[program % 256] = fragment;
+	if (!icon_rgb_fix || fragment == 0 || (source = e->sources[fragment % 256]) == NULL) {
+		return;
+	}
+	if (e->alpha_variant[program % 256] == 0) {
+		char *changed = alpha_rgb_source(source);
+
+		if (changed != NULL) {
+			e->alpha_variant[program % 256] = make_variant(e, program, vertex, fragment, changed, "alpha-only-to-RGB");
+		}
+	}
+	if (e->square_variant[program % 256] == 0) {
+		char *changed = square_plain_source(source);
+
+		if (changed != NULL) {
+			e->square_variant[program % 256] = make_variant(e, program, vertex, fragment, changed, "no squareImage mask");
+		}
+	}
+}
+
+static GLuint
+draw_variant_begin(struct eagl *e)
+{
+	static uint8_t said[256];
+	GLuint variant = e->draw_variant;
+
+	if (variant == 0) {
+		return 0;
+	}
+	glUseProgram(variant);
+	copy_uniforms(e->program, variant);
+	if (said[variant % 256]++ == 0) {
+		say("hakios-gl: V28: drawing program %u with variant %u\n", e->program, variant);
+	}
+	return variant;
+}
+
+static void
+draw_variant_end(struct eagl *e, GLuint variant)
+{
+	if (variant != 0) {
+		glUseProgram(e->program);
+	}
+}
+
 static void
 my_glLinkProgram(void *context, GLuint program)
 {
@@ -4242,6 +4538,12 @@ my_glLinkProgram(void *context, GLuint program)
 	if (!good) {
 		glGetProgramInfoLog(program, sizeof(said), NULL, said);
 		say("hakios-gl: A PROGRAM DOES NOT LINK (program %u): %s\n", program, said);
+	} else {
+		GLuint shaders[8] = { 0 };
+		GLsizei count = 0;
+
+		glGetAttachedShaders(program, (GLsizei)(sizeof(shaders) / sizeof(shaders[0])), &count, shaders);
+		program_variants(e, program, shaders, count);
 	}
 	EAGL_LEAVE(e, 0x12c0);
 }
@@ -4610,6 +4912,7 @@ install(void)
 		}
 		fetch_offered = strstr(arguments, "glfetch=0") == NULL;
 		group_vibrant_on = strstr(arguments, "glgroup=0") == NULL;
+		icon_rgb_fix = strstr(arguments, "glcolorfix=0") == NULL;
 		if ((argument = strstr(arguments, "gltrace_place=")) != NULL) {
 			char *end = (char *)argument + 14;
 
@@ -4622,6 +4925,8 @@ install(void)
 		all_shaders = strstr(arguments, "glshaders=1") != NULL;
 		census_on = strstr(arguments, "glcensus=1") != NULL;
 		frame_lines = strstr(arguments, "glframes=1") != NULL;
+		say("hakios-gl: V28 diagnostics: glshaders=%d glcensus=%d glframes=%d glcolorfix=%d\n", all_shaders, census_on,
+		    frame_lines, icon_rgb_fix);
 		latency_lines = strstr(arguments, "touch_lat=1") != NULL;
 		if ((argument = strstr(arguments, "glslow=")) != NULL) {
 			slow_calls_us = strtoull(argument + 7, NULL, 10);
