@@ -1,12 +1,10 @@
 # ios-sweet — XNU on Samsung Galaxy S21+ (Exynos 2100)
 
-Experimental work to bring Apple's open-source **XNU kernel (`xnu-8796`, iOS 16 generation)** up on a Samsung Galaxy S21+ using the Exynos 2100 platform. The current target is kernel bring-up and storage access; this is **not yet a bootable iOS phone**.
+Experimental work to bring Apple's open-source **XNU kernel (`xnu-8796`, iOS 16 generation)** up on a Samsung Galaxy S21+ using the Exynos 2100 platform, then make the iOS userland usable with Mesa/Panfrost GPU rendering.
 
 The project started as an XNU port for the Xiaomi Redmi Note 10 Pro (`sweet`, Qualcomm SM7150). The S21+ work reuses that kernel and shim code but retargets hardware-specific pieces. Some inherited patches still contain Qualcomm-specific addresses and must not be assumed safe on Exynos.
 
-> **Update 2026-10-31:** the iOS 16 lock screen/home screen is reached on the S21+, all 8 CPU cores run (`cpus=8`) and touch works (see `NOTES.md`, "8-core SMP and touch bring-up"). The older status paragraph below is kept as recorded.
->
-> **Status (handoff dated 2026-10-24, updated after the first HS-G4 boot):** XNU has reached first light, a custom userspace init as PID 1, and a small HFS+ ramdisk root. The Exynos UFS controller now works for **read-only** access: link startup, GPT lookup, real partition reads, and a 4 GiB HFS+ root image stored as a file inside `userdata` (read through a boot-time extent map) mounts and runs the custom init as PID 1. An optional HS-G4 power-mode change (boot-arg `ufshs`) has been accepted by the controller and device. Still open: measured speed, proof that the file's extents stay put, a trimmed iOS root, a writable path for `/private/var`, and running Apple's real `launchd`. **This is not yet a bootable iOS phone.**
+The older first-light/ramdisk sections below are kept as historical bring-up detail. **Status at a glance is current as of 2026-11-25.** See `NOTES.md` and `ROADMAP-linux-mesa-port.md` for exact boot logs, hashes and open tasks.
 
 ## Status at a glance
 
@@ -14,17 +12,19 @@ The project started as an XNU port for the Xiaomi Redmi Note 10 Pro (`sweet`, Qu
 | --- | --- |
 | Boot path | Linux `kexec` on the phone loads the shim and XNU payload |
 | XNU first light | **Passed** — kernel initialization reaches the SWEET platform stubs and framebuffer setup |
-| RAM-disk root | **Passed** — `sweet-init` runs as PID 1 from `md0` |
-| HFS+ ramdisk root | **Passed** — `/sbin/launchd` is loaded from a 64 MiB HFS+ image |
-| Init/syscalls | **Passed** — remount, file I/O, `mkdir`, `fork`/`exec`/`wait4`, `sysctl`, `mmap`, and `/dev/random` tests |
-| Display | Kernel framebuffer console verified at 1080×2400 |
-| SMP | **Passed (2026-10-31)** — all 8 cores (4x A55, 3x A78, 1x X1) initialize with `cpus=8`; needed the GIC redistributor stride fix (0107) and a low-memory `CPU_ON` trampoline (0108). No long-run stability test yet; scheduler treats cores as equal |
-| Touch | **Works (2026-10-31)** — `touch_ts=1` (patch 0094, bit-banged I2C, S2DOS05 supplies power-cycled at boot by default); swipe-up unlocks. Display/UI reaches the iOS lock screen and home screen |
-| Exynos UFS (read-only) | **Passed** — host init, link startup (2 TX / 2 RX lanes), NOP OUT, `fDeviceInit`, GPT parse, and real partition reads (`vbmeta` shows `AVB0`); XNU's UFS block device is read-only |
-| HFS+ root on UFS | **Passed** — a 4 GiB file inside `userdata`, read through an extent map, mounts as `SWEETROOT`; `sweet-init` runs as PID 1. Extent stability of that file is not yet proven |
-| UFS HS-G4 | **Passed in boot tests, behind a boot-arg** — `PA_PWRMODE` changes from `0x55` to `0x11` and reads stay correct; speed not yet measured. The default remains PWM Gear 1 |
-| Full iOS userland | Not yet demonstrated on the S21+ — Apple's real `launchd` has not been run, and the UFS root is read-only |
-| Hardware peripherals | Inherited Qualcomm-specific driver patches are not audited for Exynos and are disabled in the current early-boot command |
+| Display | **Works** — iOS draws to the 1080×2400 framebuffer/panel; IOMFB display power control verified |
+| SMP | **Passed** — all 8 cores (4× A55, 3× A78, 1× X1) initialize with `cpus=8`; GIC redistributor stride fix (0107) and low-memory `CPU_ON` trampoline (0108) are required |
+| Touch | **Works** — `touch_ts=1`, swipe-up unlock and home-screen interaction reach iOS |
+| Buttons | **Works (user-verified)** — power and volume keys reach iOS through the HID key path |
+| Charging / battery | **User-reported working (2026-11-25)** — charging is reported working in the current iOS boot. No separate kernel log proof is recorded here; an older photo only proved the low-battery indicator was visible |
+| Full iOS userland | **Running** — real iOS 16.7.16 userland boots to lock/home screen (SpringBoard, backboardd, Settings, Control Center) from the file-backed HFS+ root on UFS |
+| UFS storage | Exynos UFS initializes in XNU and exposes the file-backed HFS+ root in `userdata` via a boot-time extent map; raw UFS remains read-only, with overlay/rootrw used for recent boots |
+| UFS HS-G4 | **Passed in boot tests behind `ufshs`** — `PA_PWRMODE` changes from `0x55` to `0x11`; speed not yet measured |
+| GPU proof | **Passed** — Mesa 26.2.4 Panfrost on Mali-G78: exact `glReadPixels()` PASS for clear, textured quad, blended quad and clear+quad (V5/V12 onward) |
+| GPU UI | **Mostly works** — `backboardd` EAGL renders the iOS UI via Mesa in V14+; V22/V23 were stable with zero `export failed`/`CREATE_BO failed` and no respring. Still open: blue↔yellow/red↔blue icon swaps, missing Clock sub-icons, expanded-folder black bar, and ~0.3–0.4 s frames. V24 source is prepared but not yet deployed |
+| USB / network | Kernel CDC-ECM console and USB networking work for bringing/logs; iOS itself does not yet use `ue0` |
+| Wi-Fi / cellular / cameras / audio | Not part of the proven current state; keep separate from the GPU win |
+| Safety | Preserve Android, bootloaders, recovery, modem, persist, backups and the `userdata` layout. No GPT changes. Confirm each destructive step |
 
 ## Verified platform facts
 
@@ -51,6 +51,10 @@ These values are from the current handoff and bring-up observations; they are no
 5. **Read-only UFS:** `bsd/dev/sweet_ufs.c` (patch `0028`) takes over the Exynos UFS host the way the Linux Exynos driver does (PMU/sysreg writes, SMCs, vendor CAL, device reset, link startup, `fDeviceInit`), then reads the GPT and exposes a partition as a read-only block device (`ufsroot0`). Verified by reading the `vbmeta` partition (`AVB0` magic).
 6. **HFS+ root from a file inside `userdata`:** a usable iOS root does not fit in any safe partition, so a 4 GiB file is allocated and pinned inside the f2fs filesystem on `userdata`, and its physical extents (1564 of them) are handed to XNU as a `ufsmap` property in the device tree. XNU exposes `userdata` as read-only `ufsroot0`, translates reads through the map, mounts the HFS+ volume (`SWEETROOT`) and runs `sweet-init` as PID 1. Whether f2fs keeps the file's extents fixed has **not** been conclusively proven: regenerate and compare the map after every write to the file.
 7. **HS-G4 power-mode change (patch `0083`):** after device init the driver can request HS-G4 on two lanes (boot-arg `ufshs`, below). Verified in one boot with `ufshs=2` (mode change accepted, `PA_PWRMODE` `0x55` to `0x11`, partition data still correct) and in one with `ufshs=1` (the file-backed root mounted and `sweet-init` ran with the new mode active).
+8. **Full iOS userland (2026-10-31 onward):** real `launchd`, SpringBoard, backboardd, Settings and Control Center run from the file-backed root; touch, power/volume buttons and swipe-up unlock work; all 8 cores run with `cpus=8`.
+9. **Mesa/Panfrost GPU proof (V5/V12):** surfaceless GLES clear, textured quad, blended quad and clear+quad pass exact `glReadPixels()` checks on the Mali-G78. The full-screen colour flag is CPU-painted and is not the proof.
+10. **Mesa/EAGL UI (V14–V23):** injected `backboardd` renders the iOS UI through `libs21eagl.dylib`; 8/8 EAGL methods are replaced, V22/V23 have zero `export failed`/`CREATE_BO failed` and no respring. V22 mean frame `422,309 us`; V23 `383,307 us` with App Library ghosting fixed. Colours and some icons/UI details remain wrong.
+11. **V24 (prepared, not yet deployed):** source fixes page-aligned EGLImage imports and RGBA byte-order normalisation; CI/build/deploy/boot were approved and started on 2026-11-25 but no V24 boot result exists yet.
 
 ## Exynos UFS: status and remaining work
 
@@ -61,15 +65,14 @@ UFS boot arguments:
 - `rd=ufsroot0 ufsroot=<GPT partition name>` — use the named partition as the root device (the default name is `userdata`).
 - `ufshs=` — absent or `0` keeps the controller in PWM Gear 1, the long-proven path. `1` tries the HS-G4 power-mode change and keeps booting. `2` tries it, re-reads the first block of the selected partition, logs the result, and then fails the root lookup on purpose so the log lines are shown in the panic string.
 
-Remaining limitations:
+Remaining storage limitations (historical UFS scope, not a denial of the current iOS boots):
 
-- **Speed:** PWM Gear 1 is the default and HS-G4 is opt-in. No read-speed measurement exists yet, the negotiated gear and lane count are not read back (only the requested values are logged), and the device's `bRefClkFreq` is not set.
-- **No writes:** XNU's UFS block device is read-only.
-- **Pinning:** that the file's physical extents stay unchanged after it is written has not been conclusively proven.
-- **Not iOS yet:** a trimmed HFS+ iOS root and Apple's real `launchd` are future milestones. Because the UFS root is read-only, the init's remount and write tests fail there; a real `launchd` will need a writable `/private/var`, which is not yet decided.
-- **Patch series:** according to the 2026-10-24 handoff, later patches that touch `sweet_ufs.c` (writes, persistent log, USB, keys/touch and others) do not apply on top of the current `0028` and are skipped by CI until they are rebased.
+- **Speed:** PWM Gear 1 is the default and HS-G4 is opt-in. No read-speed measurement exists yet; the negotiated gear/lane count is not read back and `bRefClkFreq` is not set.
+- **Raw UFS writes:** XNU's UFS block device remains read-only. Recent iOS boots use a RAM overlay/rootrw for writable paths; never write to a raw partition without explicit approval.
+- **Pinning:** f2fs extent stability after image-file writes has not been conclusively proven. Regenerate and compare the extent map after every write.
+- **Patch series:** the note about later `sweet_ufs.c` patches being skipped comes from the 2026-10-24 handoff; check current CI logs rather than assuming it is still true.
 
-Next: measure HS-G4 against PWM G1, verify the pin, build a trimmed HFS+ iOS root, decide how `/private/var` becomes writable, then boot the real `launchd` with verbose logging (the goal is `launchd` running and logging). A visible iOS UI such as SpringBoard would additionally need display, GPU and touch drivers that do not exist for this SoC yet.
+Next for the GPU route: finish V24 visual correctness, prove `shared IOSurface` or a reliable CPU path, run a long soak, and keep buttons/touch/charging/storage behaviour stable. Historical storage tasks (HS-G4 speed, pin proof) remain separate.
 
 ## Safety rules
 

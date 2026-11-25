@@ -1,9 +1,31 @@
 # Roadmap: fresh Linux-Mesa-based GPU UI port (S21 / Mali-G78)
 
-Status: **active** (2026-11-23). This supersedes `ROADMAP-jesvi-gl-route.md` as the
+Status: **active** (2026-11-25). This supersedes `ROADMAP-jesvi-gl-route.md` as the
 chosen route. It starts from the Linux port's *known-working* Mesa 26.2.4 stack on
 this exact phone, not from the deleted Mesa branch or from Jesvi's G77/Mesa 25.0.7
 tree. Everything under `tools/linux-mesa-ios/` is written fresh in this repository.
+
+## Current status (2026-11-25)
+
+The original goal — backboardd rendering the iOS UI through Mesa Panfrost on the
+Mali-G78 — has been demonstrated. The current work is visual correctness and speed,
+not first light. V22 and V23 booted with stable EAGL injection and real
+`glReadPixels()` PASS gates; V23 improved the mean frame to `383,307 us`, but icon
+colours remain swapped (blue↔yellow, red↔blue), Clock sub-icons are missing, and an
+expanded folder shows a black bar over the top ~25%. EGLImage/IOSurface sharing has
+never engaged (`shared IOSurface` count zero). V24 source (`62b6668`) fixes the
+4 KiB import-size rejection and normalises EAGL textures/readback to RGBA; it is
+awaiting CI/deploy/boot.
+
+| Area | Current state | Evidence / caveat |
+|---|---|---|
+| Boot, display, SMP, touch, buttons | Working | iOS 16.7.16 reaches lock/home screen; all 8 cores up with `cpus=8`; touch and power/volume keys reach iOS. |
+| Charging / battery | User-reported working (2026-11-25) | Treat as current device behaviour, but no separate kernel log proof is recorded here; the old photo only proved a low-battery indicator was visible. |
+| GPU proof | **Passed** | `S21GPU: clear PASS rgba=00ff00ff`, textured quad, blended quad and clear+quad readback PASS. |
+| backboardd/EAGL UI | **Working but not final** | 8/8 EAGL methods replaced, no respring/backboardd crash in V22/V23, visible iOS UI. Colours and some icons/UI details still wrong. |
+| Storage | Working for boot | File-backed HFS+ root in `userdata`; XNU UFS remains read-only, with RAM-overlay/rootrw used for recent boots. Preserve partitions and backups. |
+| Open GPU work | V24 | Page-aligned EGLImage imports and RGBA byte-order normalisation; verify icon colours, Clock sub-icons, folder bar and speed. |
+| Not yet proven | 10-minute soak, USB networking inside iOS, Wi-Fi, cellular, cameras, audio | Keep these separate from the GPU win. |
 
 ## 0. Goal and decisions
 
@@ -102,7 +124,11 @@ The kernel GPU driver and display handoff already exist in this tree.
       rgba=8080ffbf`, all 9 submits `ret=0 out=0`, zero timeouts and zero
       `walk L0` lines. The user-observed full-screen green is the CPU-painted
       flag; the gate proof is exact `glReadPixels()` PASS.
-- [ ] Present into an IOSurface-backed layer using the existing framebuffer path.
+- [x] Present into an IOSurface-backed layer using the existing framebuffer path. V14+
+       injected `libs21eagl.dylib` into `backboardd`; V22/V23 logs show 8/8 EAGL
+       methods replaced, visible SpringBoard UI and exact GPU readback PASS. The
+       CPU copy-out path still presents most buffers; V24 tries to enable direct
+       EGLImage/IOSurface sharing.
 
 ### Phase 4 — backboardd integration
 - [x] Use the same-build (20H392 / iOS 16.7.16) HakiOS EAGL bridge from
@@ -114,15 +140,27 @@ The kernel GPU driver and display handoff already exist in this tree.
       `DYLD_INSERT_LIBRARIES=/usr/bin/libs21eagl.dylib`; the V14 boot showed
       real UI progress but **zero** `S21EAGL:`/`hakios-gl:` lines, so the plist
       env was not honoured by the platform binary.
-- [ ] Boot a new kernel with `0145-s21-eagl-backboardd-env.patch`: the exec-time
+- [x] Boot a new kernel with `0145-s21-eagl-backboardd-env.patch`: the exec-time
       hook appends the same env to `/usr/libexec/backboardd`, logs
       `S21EAGL-kernel:`, and marks the injected PID in the existing AMFI dyld
-      policy. Boot with `SWEETMETAL=1` and prove `EAGLContext` methods are
-      patched. Kernel patch is prepared; CI artifact and device boot pending.
-- [ ] Verify logo, progress bar, SpringBoard and lock screen.
+      policy. Verified in the V22/V23 boots with `SWEETMETAL=1` and 8/8 EAGL
+      methods replaced.
+- [x] Verify logo, progress bar, SpringBoard and lock screen. The visible UI is
+      real Mesa/EAGL output; Apple-logo/progress-bar presentation is not the
+      final proof and CPU-painted test colours must not be confused with it.
+- [ ] Fix the remaining EAGL defects: red/blue and blue/yellow icon swaps,
+      missing Clock/World Clock/Alarm/Stopwatch/Timer sub-icons, expanded-folder
+      icons and top black bar, and App/Library presentation details.
 
-### Phase 5 — stabilise
-- [ ] Async submit, GPU clocks/thermal, longer soak tests, renderer boot-arg.
+### Phase 5 — stabilise and optimise
+- [x] Selective cache flush and real syncobj transfer (V22): all V22/V23 submits
+      used `mode=list`; zero `export failed`/`CREATE_BO failed` and no respring.
+- [ ] Enable EGLImage/IOSurface sharing and cut the CPU copy-out: V22/V23 mean
+      copy-out was ~242 ms (~58–63% of frame time) with zero shared surfaces.
+      V24 rounds import sizes to 4 KiB and normalises EAGL byte order.
+- [ ] Async submit, GPU clocks/thermal, renderer boot-arg and a 10-minute soak.
+- [ ] Final visual acceptance: correct colours, icons, folder/black-bar behaviour
+      and usable speed in one boot log and on-screen observation.
 
 ## 3. Measured GPU parameters (from `/home/tom/s21/S21_Exynos2100.md` §11.14/11.21)
 
@@ -153,8 +191,11 @@ regulator were enough to render; no vendor DVFS/OPP needed for first light.
 2. [x] One solid clear with exact readback, then textured and blended quads
    (V12, 2026-11-24).
 3. [x] Full-screen colour result visible on the panel (no shell needed).
-4. Apple logo during the migration screen; then SpringBoard.
-5. 10-minute soak without GPU hang or panic.
+4. [x] Apple logo during the migration screen, then SpringBoard and lock/home
+   screen via Mesa/EAGL (V14–V23 boots).
+5. [ ] Correct icon colours, folder/Clock sub-icons and visible UI details in one
+   boot (V24 is the current attempt).
+6. [ ] 10-minute soak without GPU hang or panic.
 
 ## 5. Risks
 
