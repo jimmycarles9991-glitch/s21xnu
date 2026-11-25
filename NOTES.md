@@ -28,12 +28,13 @@ Fresh concise handoff, 2026-11-24. The old ~450 KB chronology was removed from t
 - Keep untracked `s20/` as a read-only reference. Do not commit it. Do not copy `ca_hooks.c`.
 - User prefers one combined script/attempt instead of several separate boots.
 
-## Current state: V21 real fixes ready, CI pending
+## Current state: V21 fixes built and verified, deployment awaiting approval
 
-- Branch: `testing-mesa-port`; head is the V21 source commit, with a notes-only follow-up expected. Keep `s20/` untracked.
+- Branch: `testing-mesa-port`; head `5113c7e` (notes). Keep untracked `s20/`.
+- V21 source commit: `c6cc351` (`gpu ios: V21 BO limits, VA fit, crash and copy-out fixes`).
 - V20 source commit: `dda812d`; deployed and booted, no win (slow, respring, mixed pinky icons).
 - V20 log: `/home/tom/Downloads/udp-sniff-20261124-215027.txt` (69,846 lines).
-- V21 is a fix attempt, not a diagnostic run: raise BO limits, stop the observed NULL deref, reduce readback cost, and fix VA/accounting exhaustion. No V21 device image, push, swap or boot is approved yet.
+- V21 CI is green and artifacts are verified. No V21 image, push, swap or boot is approved yet.
 
 ### V20 changes
 
@@ -116,12 +117,23 @@ Fresh concise handoff, 2026-11-24. The old ~450 KB chronology was removed from t
 - `tools/linux-mesa-ios/shim/s21_iokit_host.c`, `host_test.c`
   - Host model now has 512 BO slots; tests cover 300 live BOs and best-fit VA reuse.
 
-### V21 CI dispatched
+### V21 CI (correct repo: `jimmycarles9991-glitch/s21xnu`)
 
-| Run | Workflow | Head | Status |
+| Run | Workflow | Head | Result |
 | --- | --- | --- | --- |
-| `45577164674` | xnu | `bdef6e2` | dispatched `2026-11-25` |
-| `45577164974` | linux-mesa-ios | `bdef6e2` | dispatched `2026-11-25` |
+| `45577164674` | xnu | `bdef6e2` | **success**, completed `2026-11-25T08:45:03Z` |
+| `45577164974` | linux-mesa-ios | `bdef6e2` | **success**, completed `2026-11-25T08:44:00Z` |
+
+### V21 verified artifacts
+
+- Kernel `/home/tom/Downloads/kernel-v21/kernel.development.sweet`: SHA-256 `0bc9d5c4c73d146efaa362c363c48cdcdfae4270b244b7d0ee53406a005c8fac`, Mach-O 64-bit arm64, differs from V20. Artifact `SHA256SUMS` PASS.
+- Userland `/home/tom/Downloads/ios-mesa-g78-v21/`: local `SHA256SUMS` PASS; all 8 files Mach-O arm64.
+- V21 changed libs:
+  - `libgallium-26.2.4.dylib` `c9f221ec28b87bdea8765a1b7a4cb18d380d2c60447725d6236d70b2164e157f`
+  - `libs21drm.dylib` `c26a07b7e86c245dfdf523ef7422a692bebe08930b934c71b85d8088f9321697`
+  - `libs21eagl.dylib` `2301ad89c07db578b3ec0eda5821b48ed174f87d4364519c48e2e368556560e4`
+- One combined image script is ready but unexecuted: `/home/tom/Downloads/install-s21eagl-image-v21.sh`. It bases on the V20 image `bd34f2f4…15e48f`, asserts V20 lib hashes, replaces all three V21 libs, runs pre/post `fsck.hfsplus`, and outputs `V21_IMAGE_READY`. `bash -n` PASS.
+- Approved-push script template is ready but unexecuted: `/home/tom/Downloads/push-and-swap-v21.sh`. It expects active V20, types `SWAP_V21`, stages/rsyncs, swaps into `/mnt/android-data/linux/iosroot.img`, and prints `ACTIVE_V21_READY`. `bash -n` PASS.
 
 ### V21 local checks already done
 
@@ -133,11 +145,11 @@ Fresh concise handoff, 2026-11-24. The old ~450 KB chronology was removed from t
 
 ### Next move
 
-1. Commit and push V21 source, then dispatch xnu and linux-mesa-ios CI.
-2. Download and verify V21 kernel + userland artifacts when green.
-3. Prepare one combined image script replacing `libgallium-26.2.4.dylib`, `libs21drm.dylib` and `libs21eagl.dylib`; keep the V21 kernel separate for the boot command.
-4. Ask explicitly before any V21 image build/push/swap. User runs sniffer first, then boots once with the V21 kernel file.
-5. Analyse V21 log for `CREATE_BO failed`, respring, EAGL markers, frame timings, icons and wallpaper. Then do zero-copy/GPU blit for smoothness if needed.
+1. Ask for explicit approval before any V21 image build/push/swap. Device is currently in iOS; user must return to Arch/Android SSH first.
+2. User runs `sudo /home/tom/Downloads/install-s21eagl-image-v21.sh` (this shell has no interactive sudo password) and reports `V21_IMAGE_READY` plus the image SHA.
+3. After approval, run `/home/tom/Downloads/push-and-swap-v21.sh` with typed `SWAP_V21`; log to `/tmp/opencode/v21-swap.log`.
+4. User runs sniffer first, then boots once with `KERNEL_SRC=/home/tom/Downloads/kernel-v21/kernel.development.sweet`.
+5. Analyse V21 log for `CREATE_BO failed`, `export failed`, respring, EAGL markers, frame timings, icons and wallpaper. Then do zero-copy/GPU blit for smoothness if needed.
 
 ## Active device state (V20 root and kernel booted by user)
 
@@ -209,6 +221,9 @@ Good boot: GPU PASS, EAGL markers, presents, no dead injected `backboardd`, no r
 - V19 artifact: `/home/tom/Downloads/ios-mesa-g78-v19/`; `sha256sum -c SHA256SUMS` PASS; all 8 files Mach-O arm64.
 - V20 artifact: `/home/tom/Downloads/ios-mesa-g78-v20/`; local `SHA256SUMS` PASS; all 8 files Mach-O arm64.
 - V20 kernel: `/home/tom/Downloads/kernel-v20/kernel.development.sweet`, SHA-256 `8aed3bbc61ffdf095f24e4ba3bc7bc31358472a6479172aa6d8bf8ebc53382fa`.
+- V21 artifact: `/home/tom/Downloads/ios-mesa-g78-v21/`; local `SHA256SUMS` PASS; all 8 files Mach-O arm64.
+- V21 kernel: `/home/tom/Downloads/kernel-v21/kernel.development.sweet`, SHA-256 `0bc9d5c4c73d146efaa362c363c48cdcdfae4270b244b7d0ee53406a005c8fac`.
+- V21 image/push scripts (prepared, not executed): `/home/tom/Downloads/install-s21eagl-image-v21.sh`, `/home/tom/Downloads/push-and-swap-v21.sh`.
 - V19 changed libs vs V18:
   - `libs21drm.dylib` `f3ba031a774340cdff051cc7b55753b8ef4901844fe177b280a5846b5620afac`
   - `libs21eagl.dylib` `cda1822897047b630612c6b16e285e617a69d1aa234633d87be82303f8c12e0a`
