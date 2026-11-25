@@ -126,6 +126,15 @@ Updated 2026-11-25. Keep this file short: it is the active handoff for the next 
 - Census gap: `glcensus=1` produced zero `census:` lines despite four `a draw with no program` lines. The V26/V27 `libs21eagl.dylib` does contain the `census:` format strings, so this is not a missing build feature; the next diagnostic should add `glframes=1` and/or a traced frame to identify which CoreAnimation function numbers are involved. Do not interpret the silence as "all no-program draws are handled".
 - User V27 visual report is still pending: colours, app icons, Clock/Settings/Calls/Favorites sub-icons, focus/Wi-Fi backgrounds, folder/Library black bar and perceived speed have not been re-confirmed for this boot.
 
+## V28 source and prepared attempt (CI 45699089205 triggered; not booted)
+
+- Source commit `2a21e2b9f7fa9449c46dbd37473dfb2f2de6fce4` (`eagl: V28 program/shader diagnostics and targeted colour variants`) is pushed on `testing-mesa-port`. Local checks PASS: `git diff --check`, regenerated `eagl_gen.h`, and `clang -fsyntax-only` on `eagl.c` and `gl_s21.c`. Untracked `s20/` was not committed.
+- `linux-mesa-ios` CI run `45699089205` was triggered on head `2a21e2b`. Artifact hashes are still pending download; no V28 image exists yet.
+- Image script `/home/tom/Downloads/install-s21eagl-image-v28.sh` and push script `/home/tom/Downloads/push-and-swap-v28.sh` are prepared with `bash -n` PASS. Base is the verified V27 image `6d76b91c...552b0`; only `libs21eagl.dylib` changes. V27 `malinop`, the V26-verified EGL/Gallium/DRM artifacts, clock job and timezone layout are preserved. Exact V28 artifact hashes must be filled in after CI download.
+- V28 adds console-visible link-time logs (`V28: program N: D attached shaders [...]`, `V28: program N: variant program M`), small-picture program/fragment logs, a boot diag line, and per-draw variant-use logs. `glcolorfix=0` disables both variants.
+- Variant 1: alpha-only tint shaders (`vec4(t0.a)` then `color * s0`) get an RGB-preserving variant used for 100-200 px square icon textures. Variant 2: `squareImage` shaders (`color * s0 * s1.a`) get an unmasked variant used for wrapped pictures <=100x100. This is targeted from V27 shader text, not a blind byte swap; the on-device program->shader log is the proof.
+- User boot args for this attempt: `DIAG_ARGS="glshaders=1 glcensus=1 glframes=1"`, unchanged V22 kernel, `SWEETMETAL=1 GPUCOMP=1`, `EXTRA="launchd_unsecure_cache=1"`.
+
 ## V22 combined attempt
 
 One userland build; no kernel source change. Targets speed and colour together.
@@ -201,11 +210,11 @@ Expected outcome is uncertain: best case stable/faster with mostly correct icons
 
 ## Next move
 
-1. V27 is complete: image `6d76b91c...552b0` was built/verified/swapped/booted; clock is functionally fixed by user report and SpringBoard timestamps, with no need to redo clock work. Keep the V22 kernel and V26 Mesa/DRM/gallium path unchanged until visual evidence demands a change.
-2. Ask the user for the V27 visual report: icon colours; Clock/Settings/Calls/Favorites sub-icons; focus/Wi-Fi white backgrounds; folder/Library black bar; App Library ghosting; and perceived speed. The log alone cannot answer these. Do not make another blind byte-swap fix.
-3. Program→shader association is still missing. `glshaders=1` logs shader text only; `trace_program()` needs `gltrace_shaders=1` plus a traced frame (`gltrace=FIRST-LAST`). For the next boot, use one combined diagnostic set such as `DIAG_ARGS="glshaders=1 glcensus=1 glframes=1 gltrace=15-17 gltrace_shaders=1"` (or a source-level program→shader line in `drawing()`) so program 5 and the small mask programs can be tied to shader IDs. `glcensus=1` alone was silent; `glframes=1` should expose function IDs.
-4. Once the user confirms V28 symptoms and the association is known, make one targeted fix: if full 180×180 icons are drawn by an alpha-only shader like 51/53, preserve that shader for small tint masks but use the texture RGB for full icon quads; if sub-icons are absent rather than tinted, target the specific mask shader/draw. No speculative clear/sync or framebuffer-format change.
-5. Speed remains a separate architectural task: V27 copy-out is ~170 us but there are ~47 draws and ~53 submits per frame. A 60 fps target needs batching/async submit work in the XNU SweetMali path, not another V28/V29 colour tweak. User controls all boot/swap actions; assistant must not boot/kexec/flash/partition. Keep V26/V25/V24 host images as rollback references.
+1. Wait for CI run `45699089205` to finish; download `ios-mesa-g78` to `/home/tom/Downloads/ios-mesa-g78-v28/`. Verify `SHA256SUMS`, all eight Mach-O arm64 files, and fill the exact hashes into `/home/tom/Downloads/install-s21eagl-image-v28.sh`. Recheck `bash -n`.
+2. User runs `sudo /home/tom/Downloads/install-s21eagl-image-v28.sh`, then `/home/tom/Downloads/push-and-swap-v28.sh` with typed `SWAP_V28`. Assistant performs no boot, kexec, flash, partition or SSH-to-device action.
+3. User starts the sniffer first, then boots with `KERNEL_SRC=/home/tom/Downloads/kernel-v22/kernel.development.sweet EXTRA="launchd_unsecure_cache=1" SWEETMETAL=1 GPUCOMP=1 DIAG_ARGS="glshaders=1 glcensus=1 glframes=1" ./boot-hojun-gpu.sh`.
+4. Analyse the V28 log for program->shader association, variant use, icon/sub-icon/focus/Wi-Fi/black-bar defects, stability gates and frame timing. If variants do not engage or make things worse, use `glcolorfix=0` only as a controlled comparison, not another blind swap.
+5. Clock work is done and must not be redone. 60 fps remains a separate XNU SweetMali batching/async-submit architecture task; V28 targets colour/sub-icons only.
 
 ## Active device state
 
