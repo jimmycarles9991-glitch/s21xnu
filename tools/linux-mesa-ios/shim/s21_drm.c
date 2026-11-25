@@ -331,6 +331,85 @@ drmCommandWriteRead(int fd, unsigned int command, void *data, unsigned int size)
    return drmIoctl(fd, _IOWR('d', command, size), data);
 }
 
+/* Global -DHAVE_LIBDRM makes a few EGL/DRI helpers compile even though the S21
+ * port has no real DRM node. They must link; keeping them as failure stubs is
+ * safe because the surfaceless backend never calls them with a valid fd. */
+int
+drmAvailable(void)
+{
+   return 0;
+}
+
+int
+drmOpen(const char *name, const char *busid)
+{
+   (void)name; (void)busid;
+   return -1;
+}
+
+int
+drmOpenWithType(const char *name, const char *busid, int type)
+{
+   (void)name; (void)busid; (void)type;
+   return -1;
+}
+
+int
+drmOpenControl(int minor)
+{
+   (void)minor;
+   return -1;
+}
+
+int
+drmOpenRender(int minor)
+{
+   (void)minor;
+   return -1;
+}
+
+int
+drmGetMagic(int fd, drm_magic_t *magic)
+{
+   (void)fd; (void)magic;
+   return -1;
+}
+
+char *
+drmGetBusid(int fd)
+{
+   (void)fd;
+   return NULL;
+}
+
+char *
+drmGetDeviceNameFromFd(int fd)
+{
+   (void)fd;
+   return NULL;
+}
+
+int
+drmGetNodeTypeFromFd(int fd)
+{
+   (void)fd;
+   return -1;
+}
+
+char *
+drmGetPrimaryDeviceNameFromFd(int fd)
+{
+   (void)fd;
+   return NULL;
+}
+
+char *
+drmGetRenderDeviceNameFromFd(int fd)
+{
+   (void)fd;
+   return NULL;
+}
+
 /* Panfrost's kmod backend uses eventfd/timerfd only for optional perf sessions.
  * Those are never enabled here; the declarations let it compile and these
  * stubs let the dylib link. */
