@@ -132,8 +132,8 @@ Fresh concise handoff, 2026-11-24. The old ~450 KB chronology was removed from t
   - `libgallium-26.2.4.dylib` `c9f221ec28b87bdea8765a1b7a4cb18d380d2c60447725d6236d70b2164e157f`
   - `libs21drm.dylib` `c26a07b7e86c245dfdf523ef7422a692bebe08930b934c71b85d8088f9321697`
   - `libs21eagl.dylib` `2301ad89c07db578b3ec0eda5821b48ed174f87d4364519c48e2e368556560e4`
-- One combined image script is ready but unexecuted: `/home/tom/Downloads/install-s21eagl-image-v21.sh`. It bases on the V20 image `bd34f2f4…15e48f`, asserts V20 lib hashes, replaces all three V21 libs, runs pre/post `fsck.hfsplus`, and outputs `V21_IMAGE_READY`. `bash -n` PASS.
-- Approved-push script template is ready but unexecuted: `/home/tom/Downloads/push-and-swap-v21.sh`. It expects active V20, types `SWAP_V21`, stages/rsyncs, swaps into `/mnt/android-data/linux/iosroot.img`, and prints `ACTIVE_V21_READY`. `bash -n` PASS.
+- One combined image script was executed: `/home/tom/Downloads/install-s21eagl-image-v21.sh`. It based on the V20 image `bd34f2f4…15e48f`, asserted V20 lib hashes, replaced all three V21 libs, ran pre/post `fsck.hfsplus`, and printed `V21_IMAGE_READY`.
+- Approved push/swap was executed by the user: `/home/tom/Downloads/push-and-swap-v21.sh` after typed `SWAP_V21`. It verified active V20, staged/rsyncs V21, swapped into `/mnt/android-data/linux/iosroot.img`, and printed `ACTIVE_V21_READY`.
 
 ### V21 local checks already done
 
@@ -145,29 +145,29 @@ Fresh concise handoff, 2026-11-24. The old ~450 KB chronology was removed from t
 
 ### Next move
 
-1. User decision (2026-11-25): **build the image first, then push/swap only when the user says so.** Image build is approved and completed; push/swap/boot are not approved yet.
+1. User decision (2026-11-25): build image first, then push/swap when the user says. Both steps are now complete. V21 boot is user-only and has not happened yet.
 2. User ran `sudo /home/tom/Downloads/install-s21eagl-image-v21.sh`; it printed `V21_IMAGE_READY`. Host image `/home/tom/ios-sweet/build/iosroot-hojun-816f870-eagl-v21.img`: SHA-256 `0c322bf05756a21444f8ffe59e92082454c11a3c743b6a947f4a0e14021856cc`, 17,179,869,184 B, `root:root 644`; pre/post `fsck.hfsplus` both say `The volume iOSRoot appears to be OK`.
-3. Wait for the user's explicit “push and swap” instruction and for the device to be back in Arch/Android with SSH. Only then run `/home/tom/Downloads/push-and-swap-v21.sh` with typed `SWAP_V21`; log to `/tmp/opencode/v21-swap.log`.
+3. User ran `/home/tom/Downloads/push-and-swap-v21.sh` with typed `SWAP_V21`: active V20 verified, rsync ~22.65 MB/s in 12m03s, F2FS GC to 10045 free segments, sequential `dd` in 188.587 s at 91.1 MB/s, active root verified V21, `extents=3796`, tunables `2048`/`0`. Printed `ACTIVE_V21_READY`.
 4. User runs sniffer first, then boots once with `KERNEL_SRC=/home/tom/Downloads/kernel-v21/kernel.development.sweet`.
 5. Analyse V21 log for `CREATE_BO failed`, `export failed`, respring, EAGL markers, frame timings, icons and wallpaper. Then do zero-copy/GPU blit for smoothness if needed.
 
-## Active device state (V20 root and kernel booted by user)
+## Active device state (V21 root staged, V21 kernel ready to boot)
 
 - Active root image: `/mnt/android-data/linux/iosroot.img` on device.
-- SHA-256: `bd34f2f44e5cb9f574a162764ec80ff93d925f40a854011c6c3043525d61e48f`.
-- Size: `17,179,869,184` B; mode/owner `644 root:root`; `extents=3272` (≤8192 boot cap).
-- Host copy: `/home/tom/ios-sweet/build/iosroot-hojun-816f870-eagl-v20.img`, same SHA-256.
-- Kernel file for the next boot: `/home/tom/Downloads/kernel-v20/kernel.development.sweet`, SHA-256 `8aed3bbc61ffdf095f24e4ba3bc7bc31358472a6479172aa6d8bf8ebc53382fa`.
-- Last booted kernel is the V20 file above (`8aed3bbc…82fa`), supplied to the user's temporary `fastboot boot`; no kernel has been flashed.
-- Device V19 root was deleted during the V20 swap; host V19 and V18 images are retained under `/home/tom/ios-sweet/build`. There is no ready on-device rollback image.
-- Device was booted into iOS by the user. SSH/Android will be unavailable until the user returns to Arch/Android.
+- SHA-256: `0c322bf05756a21444f8ffe59e92082454c11a3c743b6a947f4a0e14021856cc`.
+- Size: `17,179,869,184` B; mode/owner `644 root:root`; `extents=3796` (≤8192 boot cap).
+- Host copy: `/home/tom/ios-sweet/build/iosroot-hojun-816f870-eagl-v21.img`, same SHA-256.
+- Kernel file for the next boot: `/home/tom/Downloads/kernel-v21/kernel.development.sweet`, SHA-256 `0bc9d5c4c73d146efaa362c363c48cdcdfae4270b244b7d0ee53406a005c8fac`.
+- Last booted kernel remains V20 (`8aed3bbc…82fa`) until the user boots V21; no kernel has been flashed.
+- Device V20 root was deleted during the V21 swap; host V20, V19 and V18 images are retained under `/home/tom/ios-sweet/build`. There is no ready on-device rollback image.
+- Device is in Arch/Linux with SSH available after the swap. After the user boots iOS, SSH/Android will be unavailable again.
 - No assistant boot/kexec/flash/partition change has happened.
 
-Last user-only boot command (sniffer first) was:
+Next user-only boot command (sniffer first):
 
 ```sh
 cd /home/tom/Downloads && sudo ./sweet-usbnet-sniff.sh
-cd /home/tom/Downloads && KERNEL_SRC=/home/tom/Downloads/kernel-v20/kernel.development.sweet EXTRA="launchd_unsecure_cache=1" SWEETMETAL=1 GPUCOMP=1 ./boot-hojun-gpu.sh
+cd /home/tom/Downloads && KERNEL_SRC=/home/tom/Downloads/kernel-v21/kernel.development.sweet EXTRA="launchd_unsecure_cache=1" SWEETMETAL=1 GPUCOMP=1 ./boot-hojun-gpu.sh
 ```
 
 ## V19 boot result and root cause
@@ -195,6 +195,7 @@ cd /home/tom/Downloads && KERNEL_SRC=/home/tom/Downloads/kernel-v20/kernel.devel
 - V18: syncobj export/import fix removed `export failed` but introduced 335 `CREATE_BO failed` plus restarts. Not a win.
 - V19: userland-only colour fix; normal colours except icons, but BO pool exhaustion and respring. Deployed now.
 - V20: kernel page-table reclaim + shim MAP_BO rollback. Deployed and booted; no observed reclaim/map-failure path, 183 `CREATE_BO failed`, respring and slowness remain. Not a win.
+- V21: BO/VA limit and accounting fixes, Mesa NULL-deref fix, single-readback copy-out. Built, verified and swapped in; awaiting user boot and log analysis.
 
 ## Log triage checklist
 
