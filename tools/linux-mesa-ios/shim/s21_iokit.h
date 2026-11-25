@@ -27,6 +27,7 @@ enum {
    S21_MAP_FB = 6,
    S21_IMPORT_USER = 8,
    S21_KEEP = 9,
+   S21_SUBMIT_LIST = 11,    /* submit; flush only the listed GPU BO VAs */
    S21_SUBMIT_RANGE = 12,
    S21_FLUSH_RANGE = 13,
 };
@@ -35,6 +36,10 @@ int s21_iokit_struct(uint32_t selector, const void *in, size_t in_len,
                      void *out, size_t *out_len);
 int s21_iokit_scalar(uint32_t selector, const uint64_t *in, uint32_t in_count,
                      uint64_t *out, uint32_t *out_count);
+/* IOConnectCallMethod: scalar inputs plus a structure input (S21_SUBMIT_LIST). */
+int s21_iokit_mixed(uint32_t selector, const uint64_t *scalar_in,
+                    uint32_t scalar_count, const void *struct_in,
+                    size_t struct_len, uint64_t *out, uint32_t *out_count);
 
 /* Map a kernel BO (handle = selector-1 index + 1) into this task. */
 void *s21_iokit_map(uint32_t handle, size_t size);
@@ -51,6 +56,8 @@ unsigned s21_host_submits(void);
 unsigned s21_host_flush_calls(void);
 uint32_t s21_host_last_slot(void);
 uint64_t s21_host_last_jc(void);
+size_t s21_host_last_struct_len(void);
+uint32_t s21_host_last_nread(void);
 uint32_t s21_host_live_bos(void);
 uint32_t s21_host_last_map_va(void);
 void s21_host_fail_map(unsigned count);   /* fail the next count MAP_BO calls */

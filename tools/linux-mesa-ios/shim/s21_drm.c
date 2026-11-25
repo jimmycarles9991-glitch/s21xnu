@@ -6,9 +6,11 @@
  * from include/drm-uapi/panfrost_drm.h. It does not import anything from the
  * deleted Mesa tree.
  *
- * Coherency: the kernel flushes every mapped BO before and after selector 3
- * SUBMIT. We therefore use cached CPU mappings (s21_iokit_map) and never assume
- * the Mali-G78 is coherent.
+ * Coherency: selector 3 SUBMIT flushes every mapped BO. V22 uses selector 11
+ * SUBMIT_LIST instead: it flushes only the large BOs named in each submit
+ * (small descriptors are always flushed by the kernel), before and after the
+ * job. We therefore still use cached CPU mappings (s21_iokit_map) and never
+ * assume the Mali-G78 is coherent, without flushing hundreds of unrelated BOs.
  */
 #include "s21_iokit.h"
 #include "s21_drm.h"
@@ -37,6 +39,8 @@
 #define S21_VA_LIMIT    0x70000000ULL
 #define S21_MAX_CHUNKS  128
 #define S21_MAX_BO      512              /* V21: match the kernel's larger fBo table */
+#define S21_PRIME_BASE  0x50000000        /* synthetic dma-buf fds; never passed to dup()/close() */
+#define S21_SMALL_PAGES 16                /* kernel always flushes BOs this small */
 
 /* Measured on this phone with the Linux Panfrost port; see ROADMAP-linux-mesa-port.md. */
 #define P_GPU_ID        0x92020010ULL
@@ -104,9 +108,11 @@ static struct {
    uint64_t total;
    uint64_t seq;
    int sync_fd[S21_MAX_BO];   /* fd -> syncobj handle + 1, 0 = unused */
+   int prime_fd[S21_MAX_BO];  /* BO handle - 1 -> synthetic dma-buf fd, 0 = unused */
 } C = {
    .lock = PTHREAD_MUTEX_INITIALIZER,
    .sync_fd = { 0 },
+   .prime_fd = { 0 },
 };
 
 static int
@@ -239,8 +245,23 @@ bo_destroy_locked(uint32_t handle)
       (void)s21_iokit_unmap(b->k[0], (void *)(uintptr_t)b->cpu);
    if (b->size)
       C.total -= b->size;
+   if (handle <= S21_MAX_BO)
+      C.prime_fd[handle - 1] = 0;
    va_free_locked(b->va, b->size);
    memset(b, 0, sizeof(*b));
+}
+
+/* The SweetMali submit selector is synchronous: when it returns, the job has
+ * finished. Publish completion on Mesa's out_sync so pipe fences do not need a
+ * sync-file export (V18's fake export path destabilised backboardd). Called
+ * with C.lock held. */
+static void
+sync_signal_locked(uint32_t handle)
+{
+   if (handle == 0 || handle > S21_MAX_BO || !C.sync[handle - 1].used)
+      return;
+   C.sync[handle - 1].signaled = true;
+   C.sync[handle - 1].point++;
 }
 
 static int
@@ -583,46 +604,84 @@ drmIoctlImpl(int fd, unsigned long request, void *arg)
    if (request == DRM_IOCTL_PANFROST_SUBMIT) {
       struct drm_panfrost_submit *s = arg;
       uint32_t slot = (s->requirements & PANFROST_JD_REQ_FS) ? 0 : 1;
-      {
-         char line[192];
-         snprintf(line, sizeof(line),
-                  "S21DRM: submit slot=%u jc=%llx req=%x nbo=%u",
-                  slot, (unsigned long long)s->jc, s->requirements,
-                  s->bo_handle_count);
-         s21_iokit_log(line);
-      }
+      uint64_t list[2 * (S21_MAX_BO / 2)];
+      unsigned nread = 0;
+
       if (s->bo_handle_count > S21_MAX_BO)
          return -EINVAL;
       const uint32_t *handles = (const uint32_t *)(uintptr_t)s->bo_handles;
+
+      /* kSMSubmitList flushes BOs whose VA is in the structure: the first
+       * nread entries before the job, the rest after it. Duplicate each large
+       * BO into both halves; an imported IOSurface may be read from and then
+       * written by the same job. BOs of <= 16 pages are always flushed by the
+       * kernel, so including them here would only add redundant work. */
       pthread_mutex_lock(&C.lock);
       uint64_t seq = ++C.seq;
       for (uint32_t i = 0; i < s->bo_handle_count; i++) {
          struct s21_bo *b = bo_find_locked(handles[i]);
-         if (b) {
-            b->seq = seq;
-            char line[160];
-            snprintf(line, sizeof(line), "S21DRM: submit bo h=%u va=%llx size=%llx",
+         if (b == NULL)
+            continue;
+         b->seq = seq;
+         {
+            char line[192];
+            snprintf(line, sizeof(line),
+                     "S21DRM: submit bo h=%u va=%llx size=%llx",
                      handles[i], (unsigned long long)b->va,
                      (unsigned long long)b->size);
             s21_iokit_log(line);
          }
+         if (b->size <= S21_SMALL_PAGES * 4096 || nread == S21_MAX_BO / 2)
+            continue;
+         bool seen = false;
+         for (unsigned k = 0; k < nread; k++)
+            seen |= list[k] == b->va;
+         if (!seen)
+            list[nread++] = b->va;
       }
+      for (unsigned i = 0; i < nread; i++)
+         list[nread + i] = list[i];
       pthread_mutex_unlock(&C.lock);
 
-      uint64_t in[3] = { slot, s->jc, 5000 }, out[1] = { 0 };
-      uint32_t n = 1;
-      int e = s21_iokit_scalar(S21_SUBMIT, in, 3, out, &n);
       {
          char line[192];
          snprintf(line, sizeof(line),
-                  "S21DRM: submit result slot=%u ret=%d out=%llx",
-                  slot, e, (unsigned long long)(n ? out[0] : 0));
+                  "S21DRM: submit slot=%u jc=%llx req=%x nbo=%u list=%u(nread=%u)",
+                  slot, (unsigned long long)s->jc, s->requirements,
+                  s->bo_handle_count, nread * 2, nread);
+         s21_iokit_log(line);
+      }
+
+      uint64_t in[4] = { slot, s->jc, 5000, nread }, out[1] = { 0 };
+      uint32_t n = 1;
+      int e = s21_iokit_mixed(S21_SUBMIT_LIST, in, 4, list,
+                              (size_t)(nread * 2) * sizeof(uint64_t),
+                              out, &n);
+      bool fallback = false;
+      if (e) {
+         /* Keep an older kernel usable: the full-flush selector is slower but
+          * correct. The log says which path actually ran. */
+         fallback = true;
+         n = 1;
+         out[0] = 0;
+         e = s21_iokit_scalar(S21_SUBMIT, in, 3, out, &n);
+      }
+      {
+         char line[192];
+         snprintf(line, sizeof(line),
+                  "S21DRM: submit result slot=%u mode=%s ret=%d out=%llx",
+                  slot, fallback ? "full" : "list", e,
+                  (unsigned long long)(n ? out[0] : 0));
          s21_iokit_log(line);
       }
       if (e)
          return e;
       if (n < 1 || out[0] != 0)
          return -EIO;
+
+      pthread_mutex_lock(&C.lock);
+      sync_signal_locked(s->out_sync);
+      pthread_mutex_unlock(&C.lock);
       return 0;
    }
 
@@ -736,6 +795,7 @@ drmIoctlImpl(int fd, unsigned long request, void *arg)
           t->dst_handle && t->dst_handle <= S21_MAX_BO &&
           C.sync[t->src_handle - 1].used && C.sync[t->dst_handle - 1].used) {
          C.sync[t->dst_handle - 1].signaled = C.sync[t->src_handle - 1].signaled;
+         C.sync[t->dst_handle - 1].point = C.sync[t->src_handle - 1].point;
          e = 0;
       }
       pthread_mutex_unlock(&C.lock);
@@ -922,23 +982,53 @@ s21_drm_import_user(uint64_t uva, uint64_t len, uint32_t *handle, uint64_t *gpu_
 
 /* --- libdrm helpers ----------------------------------------------------- */
 
+int64_t
+s21_drm_prime_fd_size(int fd)
+{
+   if (fd < S21_PRIME_BASE || fd >= S21_PRIME_BASE + S21_MAX_BO)
+      return -EINVAL;
+   uint32_t handle = (uint32_t)(fd - S21_PRIME_BASE);
+   pthread_mutex_lock(&C.lock);
+   struct s21_bo *b = bo_find_locked(handle);
+   int64_t size = b != NULL ? (int64_t)b->size : -EINVAL;
+   pthread_mutex_unlock(&C.lock);
+   return size;
+}
+
 int
 drmPrimeFDToHandle(int fd, int prime_fd, uint32_t *handle)
 {
    (void)fd;
-   (void)prime_fd;
-   (void)handle;
-   return -ENOTSUP;
+   if (handle == NULL || prime_fd < S21_PRIME_BASE ||
+       prime_fd >= S21_PRIME_BASE + S21_MAX_BO)
+      return -EINVAL;
+   uint32_t h = (uint32_t)(prime_fd - S21_PRIME_BASE);
+   pthread_mutex_lock(&C.lock);
+   struct s21_bo *b = bo_find_locked(h);
+   int e = b != NULL && C.prime_fd[h - 1] == prime_fd ? 0 : -EINVAL;
+   if (e == 0)
+      *handle = h;
+   pthread_mutex_unlock(&C.lock);
+   return e;
 }
 
 int
 drmPrimeHandleToFD(int fd, uint32_t handle, uint32_t flags, int *prime_fd)
 {
    (void)fd;
-   (void)handle;
    (void)flags;
-   (void)prime_fd;
-   return -ENOTSUP;
+   if (prime_fd == NULL)
+      return -EINVAL;
+   pthread_mutex_lock(&C.lock);
+   struct s21_bo *b = bo_find_locked(handle);
+   int e = b == NULL ? -EINVAL : 0;
+   if (e == 0) {
+      if (C.prime_fd[handle - 1] == 0)
+         C.prime_fd[handle - 1] = S21_PRIME_BASE + (int)handle;
+      *prime_fd = C.prime_fd[handle - 1];
+   }
+   pthread_mutex_unlock(&C.lock);
+   return e;
 }
 
 int

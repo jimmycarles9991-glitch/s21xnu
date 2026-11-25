@@ -248,6 +248,55 @@ test_import_user(int fd)
    free(mem);
 }
 
+static void
+test_submit_list_and_prime(int fd)
+{
+   /* V22: a large IOSurface-like import must travel through kSMSubmitList and
+    * signal its Mesa out_sync without any sync-file export. */
+   void *mem = aligned_alloc(4096, 128 * 1024);
+   assert(mem != NULL);
+   uint32_t h = 0;
+   uint64_t va = 0;
+   assert(s21_drm_import_user((uint64_t)(uintptr_t)mem, 128 * 1024,
+                              &h, &va) == 0);
+
+   int prime_fd = -1;
+   assert(drmPrimeHandleToFD(fd, h, 0, &prime_fd) == 0);
+   assert(prime_fd > 0);
+   assert(s21_drm_prime_fd_size(prime_fd) == 128 * 1024);
+   uint32_t imported = 0;
+   assert(drmPrimeFDToHandle(fd, prime_fd, &imported) == 0);
+   assert(imported == h);
+
+   uint32_t sync = 0;
+   assert(drmSyncobjCreate(fd, 0, &sync) == 0);
+   uint32_t handles[1] = { h };
+   struct drm_panfrost_submit s = {
+      .jc = va,
+      .out_sync = sync,
+      .bo_handles = (uint64_t)(uintptr_t)handles,
+      .bo_handle_count = 1,
+      .requirements = PANFROST_JD_REQ_FS,
+   };
+   unsigned submits = s21_host_submits();
+   unsigned flushes = s21_host_flush_calls();
+   assert(drmIoctl(fd, DRM_IOCTL_PANFROST_SUBMIT, &s) == 0);
+   assert(s21_host_submits() == submits + 1);
+   assert(s21_host_flush_calls() == flushes + 1);
+   /* One large BO is duplicated: first half before the job, second after. */
+   assert(s21_host_last_struct_len() == 2 * sizeof(uint64_t));
+   assert(s21_host_last_nread() == 1);
+
+   uint32_t first = 99;
+   assert(drmSyncobjWait(fd, &sync, 1, 0, 0, &first) == 0);
+   assert(first == 0);
+
+   assert(drmSyncobjDestroy(fd, sync) == 0);
+   assert(drmCloseBufferHandle(fd, h) == 0);
+   assert(s21_drm_prime_fd_size(prime_fd) == -EINVAL);
+   free(mem);
+}
+
 int
 main(void)
 {
@@ -266,6 +315,7 @@ main(void)
    test_syncobjs(fd);
    test_syncobj_import_v17(fd);
    test_import_user(fd);
+   test_submit_list_and_prime(fd);
 
    drmVersionPtr v = drmGetVersion(fd);
    assert(v != NULL && v->name != NULL && strcmp(v->name, "panfrost") == 0);

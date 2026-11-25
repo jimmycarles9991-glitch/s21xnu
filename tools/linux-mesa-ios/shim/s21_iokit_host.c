@@ -22,6 +22,8 @@ static struct {
    unsigned flushes;
    uint32_t last_slot;
    uint64_t last_jc;
+   size_t last_struct_len;
+   uint32_t last_nread;
    uint32_t last_map_va;
    unsigned fail_map;
 } H;
@@ -42,6 +44,8 @@ unsigned s21_host_submits(void) { return H.submits; }
 unsigned s21_host_flush_calls(void) { return H.flushes; }
 uint32_t s21_host_last_slot(void) { return H.last_slot; }
 uint64_t s21_host_last_jc(void) { return H.last_jc; }
+size_t s21_host_last_struct_len(void) { return H.last_struct_len; }
+uint32_t s21_host_last_nread(void) { return H.last_nread; }
 uint32_t s21_host_live_bos(void)
 {
    uint32_t n = 0;
@@ -182,6 +186,36 @@ s21_iokit_scalar(uint32_t selector, const uint64_t *in, uint32_t in_count,
    default:
       return -ENOTSUP;
    }
+}
+
+int
+s21_iokit_mixed(uint32_t selector, const uint64_t *scalar_in,
+                uint32_t scalar_count, const void *struct_in,
+                size_t struct_len, uint64_t *out, uint32_t *out_count)
+{
+   if (selector == S21_SUBMIT_LIST) {
+      if (scalar_in == NULL || scalar_count < 4 || struct_len % 8 != 0)
+         return -EINVAL;
+      H.submits++;
+      H.last_slot = (uint32_t)scalar_in[0];
+      H.last_jc = scalar_in[1];
+      H.last_struct_len = struct_len;
+      H.last_nread = (uint32_t)scalar_in[3];
+      H.flushes++;       /* one selective pre/post flush pass in the kernel */
+      if (out != NULL && out_count != NULL && *out_count >= 1) {
+         out[0] = 0;
+         *out_count = 1;
+      }
+      return 0;
+   }
+   if (struct_in != NULL) {
+      size_t n = out_count != NULL ? *out_count : 0;
+      int e = s21_iokit_struct(selector, struct_in, struct_len, out, &n);
+      if (out_count != NULL)
+         *out_count = (uint32_t)n;
+      return e;
+   }
+   return s21_iokit_scalar(selector, scalar_in, scalar_count, out, out_count);
 }
 
 void *

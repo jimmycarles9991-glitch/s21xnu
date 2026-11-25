@@ -235,6 +235,7 @@ struct image {
 	GLuint mirror;                  /* a texture that is the surface's memory, which the GPU copies the frame into (blit_targets) */
 	bool wrapped;                   /* the surface is memory of somebody's with a surface made around it */
 	bool alpha_first;               /* its pixels are opacity, blue, green, red in memory: see my_attachImage() */
+	bool bgra_for_rgba;             /* V22: format-0 client memory is blue, green, red, opacity despite GL_RGBA */
 	bool deep;                      /* (Galaxy S7 port) a 'b3a8' surface drawn into: see deep_to_bgra() */
 	bool painted;                   /* something has been drawn into it (it is a target in fact, not only in name) */
 	unsigned looked;                /* ... the frame in which that memory was last looked at, */
@@ -599,6 +600,51 @@ image_forget(struct eagl *e, GLuint texture)
 	}
 }
 
+/* V22: a surface with no pixel format is client memory wrapped by IOSurface.
+ * iOS often asks for GL_RGBA while the bytes are really BGRA (ANGLE does the
+ * same swizzle on iOS). Guess from the content instead of assuming every such
+ * surface is opacity-first ABGR: an opaque image has 0xff in its alpha byte,
+ * which is byte 0 for ABGR and byte 3 for BGRA. */
+enum wrapped_order { WRAPPED_ABGR, WRAPPED_BGRA };
+
+static enum wrapped_order
+wrapped_order_of(IOSurfaceRef surface)
+{
+	static unsigned told;
+	size_t width = IOSurfaceGetWidth(surface), height = IOSurfaceGetHeight(surface);
+	size_t row = IOSurfaceGetBytesPerRow(surface);
+	const uint8_t *base = IOSurfaceGetBaseAddress(surface);
+	size_t first_alpha = 0, last_alpha = 0, samples = 0;
+	const unsigned N = 32;
+
+	if (IOSurfaceGetPixelFormat(surface) != 0 || IOSurfaceGetPlaneCount(surface) > 0 ||
+	    IOSurfaceGetBytesPerElement(surface) != 4 || base == NULL || row < width * 4)
+		return WRAPPED_ABGR;
+
+	for (unsigned yi = 0; yi < N; yi++) {
+		size_t y = height > 1 ? (size_t)yi * (height - 1) / (N - 1) : 0;
+		const uint8_t *p = base + row * y;
+
+		for (unsigned xi = 0; xi < N; xi++) {
+			size_t x = width > 1 ? (size_t)xi * (width - 1) / (N - 1) : 0;
+			const uint8_t *q = p + x * 4;
+
+			/* Opacity is 0xff or 0x00 far more often than a colour
+			 * channel is exactly one of those at the same end. */
+			first_alpha += q[0] == 0xff || q[0] == 0x00;
+			last_alpha += q[3] == 0xff || q[3] == 0x00;
+			samples++;
+		}
+	}
+	enum wrapped_order order = last_alpha > first_alpha ? WRAPPED_BGRA : WRAPPED_ABGR;
+
+	if (told++ < 24) {
+		say("hakios-gl: wrapped surface %u byte order: %s (%zu/%zu samples have opacity first, %zu last)\n",
+		    IOSurfaceGetID(surface), order == WRAPPED_BGRA ? "BGRA" : "ABGR", first_alpha, samples, last_alpha);
+	}
+	return order;
+}
+
 /* Apple's OpenGL ES takes blue-first pixels into a texture called GL_RGBA; everybody else's calls the texture so too. */
 static GLenum
 internal_format(GLenum internal, GLenum format)
@@ -664,8 +710,12 @@ static bool
 surface_shared(struct eagl *e, struct image *image)
 {
 	IOSurfaceRef surface = image->surface;
+	/* A format-0 surface whose bytes really are BGRA can be shared even when
+	 * CoreAnimation asked for GL_RGBA: the EGLImage texture becomes GL_BGRA
+	 * internally and samples to the same RGBA values. */
+	bool bgra_bytes = image->format == GL_BGRA || image->bgra_for_rgba;
 
-	if (!share_surfaces || image->invert || image->alpha_first || image->format != GL_BGRA || image->type != GL_UNSIGNED_BYTE ||
+	if (!share_surfaces || image->invert || image->alpha_first || !bgra_bytes || image->type != GL_UNSIGNED_BYTE ||
 	    image->plane != 0 || (size_t)image->width != IOSurfaceGetWidth(surface) ||
 	    (size_t)image->height != IOSurfaceGetHeight(surface) ||
 	    !hakios_gl_surface_texture(e->gl, IOSurfaceGetID(surface))) {
@@ -815,6 +865,7 @@ surface_to_texture(struct eagl *e, struct image *image)
 	GLint row_length = 0, alignment = 4;
 	uint8_t *base, *flipped = NULL;
 	bool alpha_first = image->alpha_first && !planar && pixel == 4;
+	bool bgra_for_rgba = image->bgra_for_rgba && !planar && pixel == 4 && image->format == GL_RGBA;
 
 	if (image->shared) {
 		return;
@@ -824,14 +875,24 @@ surface_to_texture(struct eagl *e, struct image *image)
 		return;
 	}
 	base = planar ? IOSurfaceGetBaseAddressOfPlane(surface, image->plane) : IOSurfaceGetBaseAddress(surface);
-	if ((image->invert || alpha_first) && (flipped = calloc(row, (size_t)image->height)) != NULL) {
+	if ((image->invert || alpha_first || bgra_for_rgba) && (flipped = calloc(row, (size_t)image->height)) != NULL) {
 		for (GLsizei y = 0; y < image->height; y++) {
 			const uint8_t *from = base + row * (size_t)(image->invert ? image->height - 1 - y : y);
 			uint8_t *to = flipped + row * (size_t)y;
 			size_t used = (size_t)image->width * pixel;     /* (the last row may end where its pixels do) */
 
-			if (!alpha_first) {
+			if (!alpha_first && !bgra_for_rgba) {
 				memcpy(to, from, used < row ? used : row);
+				continue;
+			}
+			if (bgra_for_rgba) {
+				/* The bytes are blue, green, red, opacity although GL_RGBA was requested. */
+				for (size_t at = 0; at + 4 <= used && at + 4 <= row; at += 4) {
+					to[at] = from[at + 2];
+					to[at + 1] = from[at + 1];
+					to[at + 2] = from[at];
+					to[at + 3] = from[at + 3];
+				}
 				continue;
 			}
 			/* opacity, blue, green, red in memory: into the order OpenGL ES was told */
@@ -4314,8 +4375,15 @@ my_texImageIOSurface(id self, SEL selector, IOSurfaceRef surface, unsigned long 
 		    IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface), IOSurfaceGetPlaneCount(surface), texture, width,
 		    height, plane, invert ? ", inverted" : "");
 	}
-	/* Client memory with a surface made around it is opacity-first ABGR, as in -attachImage:. */
-	image->wrapped = image->alpha_first = IOSurfaceGetPixelFormat(surface) == 0;
+	/* V22: client memory wrapped by IOSurface has no fourcc. Some of it is
+	 * opacity-first ABGR, but app icons are often BGRA even though they are
+	 * asked for as GL_RGBA. Detect the byte order instead of guessing. */
+	image->wrapped = IOSurfaceGetPixelFormat(surface) == 0;
+	if (image->wrapped && wrapped_order_of(surface) == WRAPPED_BGRA) {
+		image->bgra_for_rgba = image->format == GL_RGBA;
+	} else {
+		image->alpha_first = image->wrapped;
+	}
 	began = now_us();
 	if (!surface_shared(e, image)) {
 		surface_changed(e, image);              /* (what it adds up to now) */
@@ -4379,7 +4447,13 @@ my_attachImage(id self, SEL selector, unsigned long target, IOSurfaceRef surface
 	 * and are not seen. iOS's library has the order from the surface; here it is taken from
 	 * there being no pixel format.
 	 */
-	image->wrapped = image->alpha_first = pixels == 0;
+	image->wrapped = pixels == 0;
+	if (image->wrapped && wrapped_order_of(surface) == WRAPPED_BGRA) {
+		/* The requested format is already GL_BGRA, so no swizzle is needed. */
+		image->bgra_for_rgba = true;
+	} else {
+		image->alpha_first = image->wrapped;
+	}
 	image->deep = deep;
 	note_format(deep ? "IOSurface attached, b3a8" : "IOSurface attached", GL_BGRA, GL_BGRA, GL_UNSIGNED_BYTE, image->width,
 	    image->height);

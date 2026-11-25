@@ -57,6 +57,19 @@ s21_iokit_scalar(uint32_t selector, const uint64_t *in, uint32_t in_count,
    return kr == KERN_SUCCESS ? 0 : -EIO;
 }
 
+int
+s21_iokit_mixed(uint32_t selector, const uint64_t *scalar_in,
+                uint32_t scalar_count, const void *struct_in,
+                size_t struct_len, uint64_t *out, uint32_t *out_count)
+{
+   if (conn == IO_OBJECT_NULL)
+      return -ENODEV;
+   kern_return_t kr = IOConnectCallMethod(conn, selector, scalar_in,
+                                          scalar_count, struct_in, struct_len,
+                                          out, out_count, NULL, NULL);
+   return kr == KERN_SUCCESS ? 0 : -EIO;
+}
+
 void *
 s21_iokit_map(uint32_t handle, size_t size)
 {

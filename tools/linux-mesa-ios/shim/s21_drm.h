@@ -25,6 +25,10 @@ int s21_drm_bo_unmap(void *addr, size_t size);
 int s21_drm_import_user(uint64_t uva, uint64_t len,
                         uint32_t *handle, uint64_t *gpu_va);
 
+/* Fake PRIME fds are synthetic numbers, not real descriptors. This returns the
+ * wrapped BO's byte size so Mesa's pan_kmod_bo_import() does not lseek() them. */
+int64_t s21_drm_prime_fd_size(int fd);
+
 #ifdef __cplusplus
 }
 #endif

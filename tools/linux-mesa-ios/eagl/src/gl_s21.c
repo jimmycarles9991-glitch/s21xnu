@@ -3,16 +3,25 @@
  * in place of gl_hero.c (OSMesa over HeroGPU).  We already ship a working
  * surfaceless EGL/GLES3 stack for the G78 (tools/linux-mesa-ios), so this
  * backend makes small ES3 pbuffer contexts with it, one per calling thread in
- * one share group, and lets eagl.c do its CPU copies between IOSurfaces and
- * ordinary GL textures.  Deliberately no
- * direct IOSurface memory sharing (hakios_gl_surface_texture() returns 0):
- * correctness first; direct EGLImage imports can be added after the first
- * backboardd frame is visible.
+ * one share group.
+ *
+ * V22: simple 4-byte 'BGRA' IOSurfaces can also be imported as Linux dma-bufs
+ * (s21_drm_import_user() + EGL_LINUX_DMA_BUF_EXT) and bound directly to a GL
+ * texture.  That lets backboardd's frame blit land in the display surface
+ * instead of being read back and copied by the CPU on every frame.  Anything
+ * else still falls back to eagl.c's CPU upload/copy-out paths.
  */
+#include <CoreFoundation/CoreFoundation.h>
+#include <IOSurface/IOSurface.h>
+
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES3/gl3.h>
+#include <GLES2/gl2ext.h>
 
+#include <drm-uapi/drm_fourcc.h>
+#include <pthread.h>
+#include <stdbool.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -20,11 +29,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <xf86drm.h>
 
 #include "hakios.gl.h"
+#include "s21_drm.h"
 #include "s21_iokit.h"
 
 #define S21_WIN 16
+#define S21_IMPORT_MAX (15ULL << 20)    /* the kernel's SM_MAX_BO_BYTES */
+#define S21_IMPORT_CACHE 16             /* bounded: each entry pins a GPU BO */
 
 struct hakios_gl {
 	EGLDisplay dpy;
@@ -286,20 +299,224 @@ hakios_gl_library(void)
 	return "Mesa 26.2.4 Panfrost G78 (surfaceless EGL/GLES3, S21)";
 }
 
-/* No IOSurface-backed texture yet: let eagl.c's ordinary texture + CPU copy
- * paths do the work.  Once glEGLImageTargetTexture2DOES or EGL dma-buf
- * imports are wired to IOSurface memory this can return 1 for BGRA surfaces. */
-int
-hakios_gl_surface_texture(struct hakios_gl *gl, uint32_t surface)
-{
-	static int reported;
+/* V22: an EGLImage made from an IOSurface's own memory.  The IOSurface is
+ * retained while cached so its base address cannot be recycled behind us; the
+ * cache is small because every entry also pins a SweetMali BO. */
+struct imported_surface {
+	EGLImageKHR image;
+	IOSurfaceRef surface;
+	uint32_t id;
+	uintptr_t base;
+	size_t row, height;
+	uint64_t used;
+};
 
-	(void)gl;
-	if (!reported) {
-		reported = 1;
-		sayf("S21EAGL: IOSurface %u not shared; using CPU texture copy\n", surface);
+static pthread_mutex_t import_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct imported_surface imported[S21_IMPORT_CACHE];
+static uint64_t import_clock;
+static unsigned imports_made, imports_failed;
+
+typedef void (*target_texture_fn)(GLenum, GLeglImageOES);
+static target_texture_fn target_texture;
+
+static bool
+importable(IOSurfaceRef surface, size_t *row_out, size_t *height_out,
+    size_t *size_out)
+{
+	size_t width = IOSurfaceGetWidth(surface);
+	size_t height = IOSurfaceGetHeight(surface);
+	size_t row = IOSurfaceGetBytesPerRow(surface);
+	size_t needed;
+
+	if (IOSurfaceGetPixelFormat(surface) != 'BGRA' ||
+	    IOSurfaceGetPlaneCount(surface) != 0 ||
+	    IOSurfaceGetBytesPerElement(surface) != 4 ||
+	    width == 0 || height == 0 || row < width * 4 ||
+	    IOSurfaceGetBaseAddress(surface) == NULL ||
+	    row > S21_IMPORT_MAX / height) {
+		return false;
 	}
-	return 0;
+	needed = row * height;
+	/* kSMImportUser maps whole 4 KiB pages. The allocation size is usually
+	 * already page-aligned and includes the last row's padding; using it also
+	 * lets small wrapped surfaces be imported. */
+	size_t alloc = IOSurfaceGetAllocSize(surface);
+	size_t size = alloc >= needed ? alloc : needed;
+
+	if (size == 0 || size > S21_IMPORT_MAX || (size & 0xfff) != 0)
+		return false;
+	*row_out = row;
+	*height_out = height;
+	*size_out = size;
+	return true;
+}
+
+static EGLImageKHR
+import_image(EGLDisplay dpy, IOSurfaceRef surface, size_t row, size_t height,
+    size_t size)
+{
+	static PFNEGLCREATEIMAGEKHRPROC create_image;
+	static int no_proc;
+	uintptr_t base = (uintptr_t)IOSurfaceGetBaseAddress(surface);
+	uint32_t handle = 0;
+	uint64_t gpu_va = 0;
+	int prime_fd = -1;
+	EGLImageKHR image;
+
+	if (create_image == NULL && !no_proc) {
+		create_image = (PFNEGLCREATEIMAGEKHRPROC)eglGetProcAddress("eglCreateImageKHR");
+		if (create_image == NULL) {
+			no_proc = 1;
+			say("S21EAGL: eglCreateImageKHR unavailable; using CPU copies\n");
+		}
+	}
+	if (create_image == NULL)
+		return EGL_NO_IMAGE_KHR;
+
+	if (s21_drm_import_user((uint64_t)base, size, &handle, &gpu_va) != 0) {
+		if (imports_failed++ < 8) {
+			sayf("S21EAGL: IOSurface %u import_user failed (%zu x %zu, %llu bytes)\n",
+			    IOSurfaceGetID(surface), row, height,
+			    (unsigned long long)size);
+		}
+		return EGL_NO_IMAGE_KHR;
+	}
+	if (drmPrimeHandleToFD(S21_DRM_FD, handle, 0, &prime_fd) != 0) {
+		drmCloseBufferHandle(S21_DRM_FD, handle);
+		return EGL_NO_IMAGE_KHR;
+	}
+
+	const EGLint attr[] = {
+		EGL_WIDTH, (EGLint)IOSurfaceGetWidth(surface),
+		EGL_HEIGHT, (EGLint)height,
+		EGL_LINUX_DRM_FOURCC_EXT, DRM_FORMAT_ARGB8888, /* memory: B,G,R,A */
+		EGL_DMA_BUF_PLANE0_FD_EXT, prime_fd,
+		EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
+		EGL_DMA_BUF_PLANE0_PITCH_EXT, (EGLint)row,
+		EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT, (EGLint)(DRM_FORMAT_MOD_LINEAR & 0xffffffffULL),
+		EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT, (EGLint)(DRM_FORMAT_MOD_LINEAR >> 32),
+		EGL_NONE
+	};
+	image = create_image(dpy, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, attr);
+	if (image == EGL_NO_IMAGE_KHR) {
+		/* Panfrost closes the GEM handle if its import failed; a second
+		 * close is rejected harmlessly by the shim. */
+		drmCloseBufferHandle(S21_DRM_FD, handle);
+		if (imports_failed++ < 8) {
+			EGLint error = eglGetError();
+
+			sayf("S21EAGL: eglCreateImageKHR failed for IOSurface %u: %s (0x%x)\n",
+			    IOSurfaceGetID(surface), egl_error_name(error),
+			    (unsigned)error);
+		}
+		return EGL_NO_IMAGE_KHR;
+	}
+	if (imports_made++ < 8) {
+		sayf("S21EAGL: shared IOSurface %u (BGRA %zu x %zu, %zu bytes a row)\n",
+		    IOSurfaceGetID(surface), (size_t)IOSurfaceGetWidth(surface), height, row);
+	}
+	return image;
+}
+
+static void
+forget_entry(struct imported_surface *entry)
+{
+	static PFNEGLDESTROYIMAGEKHRPROC destroy_image;
+	EGLDisplay dpy = g_last_dpy;
+
+	if (entry->image != EGL_NO_IMAGE_KHR) {
+		if (destroy_image == NULL) {
+			destroy_image = (PFNEGLDESTROYIMAGEKHRPROC)eglGetProcAddress("eglDestroyImageKHR");
+		}
+		if (destroy_image != NULL && dpy != EGL_NO_DISPLAY)
+			destroy_image(dpy, entry->image);
+		entry->image = EGL_NO_IMAGE_KHR;
+	}
+	if (entry->surface != NULL) {
+		CFRelease(entry->surface);
+		entry->surface = NULL;
+	}
+	entry->id = 0;
+	entry->base = 0;
+	entry->row = entry->height = 0;
+	entry->used = 0;
+}
+
+int
+hakios_gl_surface_texture(struct hakios_gl *gl, uint32_t surface_id)
+{
+	IOSurfaceRef surface;
+	struct imported_surface *entry = NULL;
+	size_t row, height, size;
+	uintptr_t base;
+	EGLImageKHR image;
+
+	if (gl == NULL || gl->dpy == EGL_NO_DISPLAY)
+		return 0;
+	if (target_texture == NULL) {
+		target_texture = (target_texture_fn)eglGetProcAddress("glEGLImageTargetTexture2DOES");
+		if (target_texture == NULL) {
+			static int told;
+			if (!told) {
+				told = 1;
+				say("S21EAGL: glEGLImageTargetTexture2DOES unavailable; using CPU copies\n");
+			}
+			return 0;
+		}
+	}
+
+	surface = IOSurfaceLookup(surface_id);
+	if (surface == NULL)
+		return 0;
+	if (!importable(surface, &row, &height, &size)) {
+		CFRelease(surface);
+		return 0;
+	}
+	base = (uintptr_t)IOSurfaceGetBaseAddress(surface);
+
+	pthread_mutex_lock(&import_lock);
+	for (unsigned i = 0; i < S21_IMPORT_CACHE; i++) {
+		struct imported_surface *c = &imported[i];
+
+		if (c->image == EGL_NO_IMAGE_KHR)
+			continue;
+		if (c->id == surface_id && c->base == base && c->row == row && c->height == height) {
+			entry = c;
+			break;
+		}
+		if (c->id == surface_id) {
+			forget_entry(c);       /* the surface was recreated at another address */
+		}
+	}
+	if (entry == NULL) {
+		uint64_t oldest = UINT64_MAX;
+
+		for (unsigned i = 0; i < S21_IMPORT_CACHE; i++) {
+			if (imported[i].used < oldest) {
+				oldest = imported[i].used;
+				entry = &imported[i];
+			}
+		}
+		forget_entry(entry);
+
+		image = import_image(gl->dpy, surface, row, height, size);
+		if (image != EGL_NO_IMAGE_KHR) {
+			entry->surface = (IOSurfaceRef)CFRetain(surface);
+			entry->image = image;
+			entry->id = surface_id;
+			entry->base = base;
+			entry->row = row;
+			entry->height = height;
+		}
+	}
+	if (entry != NULL && entry->image != EGL_NO_IMAGE_KHR) {
+		entry->used = ++import_clock;
+		target_texture(GL_TEXTURE_2D, (GLeglImageOES)entry->image);
+	}
+	pthread_mutex_unlock(&import_lock);
+
+	CFRelease(surface);
+	return entry != NULL && entry->image != EGL_NO_IMAGE_KHR;
 }
 
 void
@@ -307,6 +524,10 @@ hakios_gl_surface_written(struct hakios_gl *gl, uint32_t surface)
 {
 	(void)gl;
 	(void)surface;
+
+	/* Submits are synchronous in the shim, but CoreAnimation publishes the
+	 * surface as soon as we return; make the GPU blit visible before then. */
+	glFinish();
 }
 
 /* ES1 entry in iOS's macro table that Mesa's ES3 library does not export.

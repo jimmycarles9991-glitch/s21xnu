@@ -47,7 +47,11 @@ def main() -> int:
         "meson.build",
         "src/gallium/frontends/dri/dri2.c",
         "src/panfrost/lib/kmod/pan_kmod.h",
+        "src/panfrost/lib/kmod/pan_kmod.c",
         "src/gallium/drivers/panfrost/pan_bo.c",
+        "src/gallium/drivers/panfrost/pan_screen.c",
+        "src/gallium/drivers/panfrost/pan_fence.c",
+        "src/gallium/drivers/panfrost/pan_context.c",
         "src/gallium/drivers/panfrost/pan_resource.c",
         "src/loader/loader.c",
         "src/egl/drivers/dri2/platform_surfaceless.c",
@@ -195,6 +199,204 @@ s21_pipe_loader_release(struct pipe_loader_device **dev)
 #else
    if (os_munmap((void *)(uintptr_t)bo->ptr.cpu, panfrost_bo_size(bo))) {
 #endif
+'''),
+    ])
+
+    edit(MESA / "src/panfrost/lib/kmod/pan_kmod.c", [
+        ('#include <xf86drm.h>\n',
+         '#include <xf86drm.h>\n#ifdef S21_IOS\n#include "s21_drm.h"\n#endif\n'),
+        ('''   } else {
+      size_t size = lseek(fd, 0, SEEK_END);
+      if (size == 0 || size == (size_t)-1) {
+         mesa_loge("invalid dmabuf size");
+         goto err_close_handle;
+      }
+''',
+         '''   } else {
+#ifdef S21_IOS
+      /* V22: IOSurface dma-bufs are synthetic fds, not real descriptors;
+       * lseek() on them cannot report a size. The shim owns the wrapped BO. */
+      int64_t size64 = s21_drm_prime_fd_size(fd);
+      if (size64 <= 0) {
+         mesa_loge("invalid dmabuf size");
+         goto err_close_handle;
+      }
+      size_t size = (size_t)size64;
+#else
+      size_t size = lseek(fd, 0, SEEK_END);
+      if (size == 0 || size == (size_t)-1) {
+         mesa_loge("invalid dmabuf size");
+         goto err_close_handle;
+      }
+#endif
+'''),
+    ])
+
+    edit(MESA / "src/gallium/drivers/panfrost/pan_screen.c", [
+        ('#include "drm-uapi/panfrost_drm.h"\n',
+         '#include "drm-uapi/panfrost_drm.h"\n#ifdef S21_IOS\n#include "drm-uapi/drm.h"\n#endif\n'),
+        ('   caps->vendor_id = ARM_VENDOR_ID;\n',
+         '''   caps->vendor_id = ARM_VENDOR_ID;
+#ifdef S21_IOS
+   /* V22: EGL's dma-buf image import is gated on this pipe-screen cap. The
+    * shim accepts PRIME handles for IOSurface memory, so advertise import. */
+   caps->dmabuf = DRM_PRIME_CAP_IMPORT;
+#endif
+'''),
+    ])
+
+    edit(MESA / "src/gallium/drivers/panfrost/pan_fence.c", [
+        ('''int
+panfrost_fence_get_fd(struct pipe_screen *screen, struct pipe_fence_handle *f)
+{
+   struct panfrost_device *dev = pan_device(screen);
+   int fd = -1;
+
+   drmSyncobjExportSyncFile(panfrost_device_fd(dev), f->syncobj, &fd);
+   return fd;
+}
+''',
+         '''int
+panfrost_fence_get_fd(struct pipe_screen *screen, struct pipe_fence_handle *f)
+{
+#ifdef S21_IOS
+   /* No sync-file export on the fake DRM fd; the shim signals syncobj directly. */
+   (void)screen;
+   (void)f;
+   return -1;
+#else
+   struct panfrost_device *dev = pan_device(screen);
+   int fd = -1;
+
+   drmSyncobjExportSyncFile(panfrost_device_fd(dev), f->syncobj, &fd);
+   return fd;
+#endif
+}
+'''),
+        ('''struct pipe_fence_handle *
+panfrost_fence_create(struct panfrost_context *ctx)
+{
+   struct panfrost_device *dev = pan_device(ctx->base.screen);
+   int fd = -1, ret;
+
+   /* Snapshot the last rendering out fence. We'd rather have another
+    * syncobj instead of a sync file, but this is all we get.
+    * (HandleToFD/FDToHandle just gives you another syncobj ID for the
+    * same syncobj).
+    */
+   ret = drmSyncobjExportSyncFile(panfrost_device_fd(dev), ctx->syncobj, &fd);
+   if (ret || fd == -1) {
+      mesa_loge("export failed\\n");
+      return NULL;
+   }
+
+   struct pipe_fence_handle *f =
+      panfrost_fence_from_fd(ctx, fd, PIPE_FD_TYPE_NATIVE_SYNC);
+
+   close(fd);
+
+   return f;
+}
+''',
+         '''struct pipe_fence_handle *
+panfrost_fence_create(struct panfrost_context *ctx)
+{
+#ifdef S21_IOS
+   /* V22: the shim's SUBMIT is synchronous and signals ctx->syncobj. Transfer
+    * that syncobj into a fresh fence instead of exporting a fake sync file;
+    * V18's exported-standby-fd path removed one error but caused BO churn. */
+   struct panfrost_device *dev = pan_device(ctx->base.screen);
+   struct pipe_fence_handle *f = calloc(1, sizeof(*f));
+   if (!f)
+      return NULL;
+
+   int ret = drmSyncobjCreate(panfrost_device_fd(dev), 0, &f->syncobj);
+   if (ret) {
+      mesa_loge("fence syncobj create failed\\n");
+      free(f);
+      return NULL;
+   }
+   ret = drmSyncobjTransfer(panfrost_device_fd(dev), f->syncobj, 0,
+                            ctx->syncobj, 0, 0);
+   if (ret) {
+      mesa_loge("fence syncobj transfer failed\\n");
+      drmSyncobjDestroy(panfrost_device_fd(dev), f->syncobj);
+      free(f);
+      return NULL;
+   }
+
+   pipe_reference_init(&f->reference, 1);
+   return f;
+#else
+   struct panfrost_device *dev = pan_device(ctx->base.screen);
+   int fd = -1, ret;
+
+   /* Snapshot the last rendering out fence. We'd rather have another
+    * syncobj instead of a sync file, but this is all we get.
+    * (HandleToFD/FDToHandle just gives you another syncobj ID for the
+    * same syncobj).
+    */
+   ret = drmSyncobjExportSyncFile(panfrost_device_fd(dev), ctx->syncobj, &fd);
+   if (ret || fd == -1) {
+      mesa_loge("export failed\\n");
+      return NULL;
+   }
+
+   struct pipe_fence_handle *f =
+      panfrost_fence_from_fd(ctx, fd, PIPE_FD_TYPE_NATIVE_SYNC);
+
+   close(fd);
+
+   return f;
+#endif
+}
+'''),
+    ])
+
+    edit(MESA / "src/gallium/drivers/panfrost/pan_context.c", [
+        ('''static void
+panfrost_fence_server_sync(struct pipe_context *pctx,
+                           struct pipe_fence_handle *f,
+                           uint64_t value)
+{
+   struct panfrost_device *dev = pan_device(pctx->screen);
+   struct panfrost_context *ctx = pan_context(pctx);
+   ASSERTED int ret;
+   int fd = -1;
+   assert(!value);
+
+   ret = drmSyncobjExportSyncFile(panfrost_device_fd(dev), f->syncobj, &fd);
+   assert(!ret);
+
+   sync_accumulate("panfrost", &ctx->in_sync_fd, fd);
+   close(fd);
+}
+''',
+         '''static void
+panfrost_fence_server_sync(struct pipe_context *pctx,
+                           struct pipe_fence_handle *f,
+                           uint64_t value)
+{
+#ifdef S21_IOS
+   /* Every SUBMIT is synchronous in the shim, so there is no pending server
+    * fence to accumulate and no sync file to export. */
+   (void)pctx;
+   (void)f;
+   assert(!value);
+#else
+   struct panfrost_device *dev = pan_device(pctx->screen);
+   struct panfrost_context *ctx = pan_context(pctx);
+   ASSERTED int ret;
+   int fd = -1;
+   assert(!value);
+
+   ret = drmSyncobjExportSyncFile(panfrost_device_fd(dev), f->syncobj, &fd);
+   assert(!ret);
+
+   sync_accumulate("panfrost", &ctx->in_sync_fd, fd);
+   close(fd);
+#endif
+}
 '''),
     ])
 
