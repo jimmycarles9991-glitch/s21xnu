@@ -145,8 +145,8 @@ Fresh concise handoff, 2026-11-24. The old ~450 KB chronology was removed from t
 
 ### Next move
 
-1. User decision (2026-11-25): **build the image first, then push/swap only when the user says so.** Image build is approved; push/swap/boot are not approved yet.
-2. User runs `sudo /home/tom/Downloads/install-s21eagl-image-v21.sh` (this shell has no interactive sudo password) and reports `V21_IMAGE_READY` plus the image SHA.
+1. User decision (2026-11-25): **build the image first, then push/swap only when the user says so.** Image build is approved and completed; push/swap/boot are not approved yet.
+2. User ran `sudo /home/tom/Downloads/install-s21eagl-image-v21.sh`; it printed `V21_IMAGE_READY`. Host image `/home/tom/ios-sweet/build/iosroot-hojun-816f870-eagl-v21.img`: SHA-256 `0c322bf05756a21444f8ffe59e92082454c11a3c743b6a947f4a0e14021856cc`, 17,179,869,184 B, `root:root 644`; pre/post `fsck.hfsplus` both say `The volume iOSRoot appears to be OK`.
 3. Wait for the user's explicit “push and swap” instruction and for the device to be back in Arch/Android with SSH. Only then run `/home/tom/Downloads/push-and-swap-v21.sh` with typed `SWAP_V21`; log to `/tmp/opencode/v21-swap.log`.
 4. User runs sniffer first, then boots once with `KERNEL_SRC=/home/tom/Downloads/kernel-v21/kernel.development.sweet`.
 5. Analyse V21 log for `CREATE_BO failed`, `export failed`, respring, EAGL markers, frame timings, icons and wallpaper. Then do zero-copy/GPU blit for smoothness if needed.
@@ -223,7 +223,8 @@ Good boot: GPU PASS, EAGL markers, presents, no dead injected `backboardd`, no r
 - V20 kernel: `/home/tom/Downloads/kernel-v20/kernel.development.sweet`, SHA-256 `8aed3bbc61ffdf095f24e4ba3bc7bc31358472a6479172aa6d8bf8ebc53382fa`.
 - V21 artifact: `/home/tom/Downloads/ios-mesa-g78-v21/`; local `SHA256SUMS` PASS; all 8 files Mach-O arm64.
 - V21 kernel: `/home/tom/Downloads/kernel-v21/kernel.development.sweet`, SHA-256 `0bc9d5c4c73d146efaa362c363c48cdcdfae4270b244b7d0ee53406a005c8fac`.
-- V21 image/push scripts (prepared, not executed): `/home/tom/Downloads/install-s21eagl-image-v21.sh`, `/home/tom/Downloads/push-and-swap-v21.sh`.
+- V21 host image (built, not pushed): `/home/tom/ios-sweet/build/iosroot-hojun-816f870-eagl-v21.img`, SHA-256 `0c322bf05756a21444f8ffe59e92082454c11a3c743b6a947f4a0e14021856cc`.
+- V21 image/push scripts: `/home/tom/Downloads/install-s21eagl-image-v21.sh` (executed), `/home/tom/Downloads/push-and-swap-v21.sh` (prepared, not executed).
 - V19 changed libs vs V18:
   - `libs21drm.dylib` `f3ba031a774340cdff051cc7b55753b8ef4901844fe177b280a5846b5620afac`
   - `libs21eagl.dylib` `cda1822897047b630612c6b16e285e617a69d1aa234633d87be82303f8c12e0a`
