@@ -21,7 +21,7 @@ The older first-light/ramdisk sections below are kept as historical bring-up det
 | UFS storage | Exynos UFS initializes in XNU and exposes the file-backed HFS+ root in `userdata` via a boot-time extent map; raw UFS remains read-only, with overlay/rootrw used for recent boots |
 | UFS HS-G4 | **Passed in boot tests behind `ufshs`** — `PA_PWRMODE` changes from `0x55` to `0x11`; speed not yet measured |
 | GPU proof | **Passed** — Mesa 26.2.4 Panfrost on Mali-G78: exact `glReadPixels()` PASS for clear, textured quad, blended quad and clear+quad (V5/V12 onward) |
-| GPU UI | **Mostly works** — `backboardd` EAGL renders the iOS UI via Mesa in V14+; V22/V23 were stable with zero `export failed`/`CREATE_BO failed` and no respring. Still open: blue↔yellow/red↔blue icon swaps, missing Clock sub-icons, expanded-folder black bar, and ~0.3–0.4 s frames. V24 CI is green; image/deploy/boot are pending |
+| GPU UI | **Mostly works** — `backboardd` EAGL renders the iOS UI via Mesa in V14+; V22/V23 were stable with zero `export failed`/`CREATE_BO failed` and no respring. Still open: blue↔yellow/red↔blue icon swaps, missing Clock sub-icons, expanded-folder black bar, and ~0.3–0.4 s frames. V24 CI and image are verified; awaiting typed swap and boot |
 | USB / network | Kernel CDC-ECM console and USB networking work for bringing/logs; iOS itself does not yet use `ue0` |
 | Wi-Fi / cellular / cameras / audio | Not part of the proven current state; keep separate from the GPU win |
 | Safety | Preserve Android, bootloaders, recovery, modem, persist, backups and the `userdata` layout. No GPT changes. Confirm each destructive step |
@@ -54,7 +54,7 @@ These values are from the current handoff and bring-up observations; they are no
 8. **Full iOS userland (2026-10-31 onward):** real `launchd`, SpringBoard, backboardd, Settings and Control Center run from the file-backed root; touch, power/volume buttons and swipe-up unlock work; all 8 cores run with `cpus=8`.
 9. **Mesa/Panfrost GPU proof (V5/V12):** surfaceless GLES clear, textured quad, blended quad and clear+quad pass exact `glReadPixels()` checks on the Mali-G78. The full-screen colour flag is CPU-painted and is not the proof.
 10. **Mesa/EAGL UI (V14–V23):** injected `backboardd` renders the iOS UI through `libs21eagl.dylib`; 8/8 EAGL methods are replaced, V22/V23 have zero `export failed`/`CREATE_BO failed` and no respring. V22 mean frame `422,309 us`; V23 `383,307 us` with App Library ghosting fixed. Colours and some icons/UI details remain wrong.
-11. **V24 (CI green, not yet deployed):** source fixes page-aligned EGLImage imports and RGBA byte-order normalisation. linux-mesa-ios CI `45623900771` succeeded in 16m18s; all eight artifacts are Mach-O arm64 and only `libs21eagl.dylib` changed from V23. No V24 boot result exists yet.
+11. **V24 (verified, not yet deployed):** source fixes page-aligned EGLImage imports and RGBA byte-order normalisation. linux-mesa-ios CI `45623900771` succeeded in 16m18s; all eight artifacts are Mach-O arm64 and only `libs21eagl.dylib` changed from V23. The V24 HFS+ image passed fsck and hash checks; the active device root verified as V23. No V24 swap or boot result exists yet.
 
 ## Exynos UFS: status and remaining work
 
