@@ -26,18 +26,20 @@ jobs:
           OUT_DIR="$GITHUB_WORKSPACE/out/linux-mesa-ios" \
             bash tools/linux-mesa-ios/build-ios-mesa.sh
 
-      - name: Build S21IconProbe test app
-        run: |
-          set -euo pipefail
-          OUT_DIR="$GITHUB_WORKSPACE/out/s21-icon-probe" \
-            bash tools/s21-icon-probe/build.sh
-
+      # Upload Mesa before building the test app. A bug in the app builder must
+      # not discard a good Mesa build.
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ios-mesa-g78
           path: out/linux-mesa-ios/
           if-no-files-found: error
+
+      - name: Build S21IconProbe test app
+        run: |
+          set -euo pipefail
+          OUT_DIR="$GITHUB_WORKSPACE/out/s21-icon-probe" \
+            bash tools/s21-icon-probe/build.sh
 
       - name: Upload S21IconProbe artifact
         uses: actions/upload-artifact@v4

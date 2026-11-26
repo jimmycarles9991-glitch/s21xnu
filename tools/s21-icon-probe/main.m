@@ -29,7 +29,7 @@ static UIImage *probe_image(NSString *name)
 
     UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(16, 24, self.view.bounds.size.width - 32, 28)];
     label.text = self.assetName;
-    label.font = [UIFont monospaceSystemFontOfSize:15];
+    label.font = [UIFont monospacedSystemFontOfSize:15 weight:UIFontWeightRegular];
     label.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [self.view addSubview:label];
 

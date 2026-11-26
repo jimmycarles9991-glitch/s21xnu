@@ -32,8 +32,17 @@ def write_png(path, width, height, pixel):
 
 
 def quadrants(colours):
-    def pixel(x, y, w, h):
-        return colours[(y * 2 // h) * 4 + (x * 4 // w)]
+    # APP_COLOURS is a 2x4 grid; FOLDER_COLOURS are 2x2 grids. Both are laid
+    # out row-major, so keep the test images deterministic without padding the
+    # folder palettes with duplicate colours.
+    if len(colours) == 4:
+        def pixel(x, y, w, h):
+            return colours[(y * 2 // h) * 2 + (x * 2 // w)]
+    elif len(colours) == 8:
+        def pixel(x, y, w, h):
+            return colours[(y * 2 // h) * 4 + (x * 4 // w)]
+    else:
+        raise ValueError('quadrants needs 4 or 8 colours, got %d' % len(colours))
     return pixel
 
 
