@@ -2,6 +2,10 @@ name: linux-mesa-ios
 
 on:
   workflow_dispatch:
+    inputs:
+      build_probe_app:
+        description: Build the S21IconProbe test IPA (set false for lean V33 runs)
+        default: "true"
 
 permissions:
   contents: read
@@ -36,12 +40,14 @@ jobs:
           if-no-files-found: error
 
       - name: Build S21IconProbe test app
+        if: ${{ inputs.build_probe_app != 'false' }}
         run: |
           set -euo pipefail
           OUT_DIR="$GITHUB_WORKSPACE/out/s21-icon-probe" \
             bash tools/s21-icon-probe/build.sh
 
       - name: Upload S21IconProbe artifact
+        if: ${{ inputs.build_probe_app != 'false' }}
         uses: actions/upload-artifact@v4
         with:
           name: s21-icon-probe

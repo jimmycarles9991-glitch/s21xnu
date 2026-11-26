@@ -562,11 +562,18 @@ hakios_gl_surface_texture(struct hakios_gl *gl, uint32_t surface_id)
 	return entry != NULL && entry->image != EGL_NO_IMAGE_KHR;
 }
 
-/* V32: the shim's submit is synchronous, and eagl.c already sends the blit
- * through the IOKit pair. A full glFinish() made CoreAnimation wait for every
- * GPU job before it could publish the next layer; a fence with a zero-timeout
- * flush sends queued work without waiting behind it. glfinish=1 restores the
- * old behaviour for an A/B boot. */
+/* V32's zero-timeout fence flush was fast but could publish a layer before
+ * the GPU had finished it: the missing small glyphs and the black top strip
+ * while scrolling Library fit that race. V33 keeps a short bounded wait so
+ * the submission is complete before the display reads the surface, and only
+ * falls back to a full finish if that wait times out. glfinish=0 restores the
+ * V32 race for an A/B boot; glfinish=1 is the old unconditional finish. */
+#ifndef GL_ALREADY_SIGNALED
+#define GL_ALREADY_SIGNALED 0x911a
+#define GL_TIMEOUT_EXPIRED 0x911b
+#define GL_CONDITION_SATISFIED 0x911c
+#define GL_WAIT_FAILED 0x911d
+#endif
 static int surface_finish_mode;
 
 void
@@ -574,9 +581,11 @@ hakios_gl_surface_written_mode(int finish)
 {
 	static int told;
 
-	surface_finish_mode = finish != 0;
+	surface_finish_mode = finish;
 	if (told++ == 0) {
-		sayf("S21EAGL: V32 surface publish mode: %s\n", surface_finish_mode ? "glFinish" : "fence flush");
+		const char *name = finish == 0 ? "V32 fence flush" : finish == 1 ? "glFinish" : "V33 bounded wait";
+
+		sayf("S21EAGL: V33 surface publish mode: %s\n", name);
 	}
 }
 
@@ -586,15 +595,28 @@ hakios_gl_surface_written(struct hakios_gl *gl, uint32_t surface)
 	(void)gl;
 	(void)surface;
 
-	if (surface_finish_mode) {
+	if (surface_finish_mode == 1) {
 		glFinish();
 		return;
 	}
 	GLsync sync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
 
-	if (sync != 0) {
-		(void)glClientWaitSync(sync, GL_SYNC_FLUSH_COMMANDS_BIT, 0);
-		glDeleteSync(sync);
+	if (sync == 0) {
+		glFinish();
+		return;
+	}
+	/* The flush bit matters in V32 mode too: without a wait call the fence
+	 * alone does not guarantee the queued GL commands have been submitted. */
+	GLuint64 result = glClientWaitSync(sync, GL_SYNC_FLUSH_COMMANDS_BIT,
+	    surface_finish_mode == 0 ? 0 : 2000000ull);
+	glDeleteSync(sync);
+	if (surface_finish_mode != 0 && (result == GL_TIMEOUT_EXPIRED || result == GL_WAIT_FAILED)) {
+		static int timed_out;
+
+		glFinish();
+		if (timed_out++ < 8) {
+			sayf("S21EAGL: V33 surface publish wait ended 0x%llx; used glFinish\n", (unsigned long long)result);
+		}
 	}
 }
 

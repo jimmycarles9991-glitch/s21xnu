@@ -26,7 +26,8 @@ cat > bsd/dev/sweet_max77705.c <<'EOF_SWEET_SRC'
  *
  * Boot-args: sweetbattery=2 starts this (SweetBattery.cpp). sweetchg=0 = read only (no writes).
  *   sweetchg_cc=<mA> fast-charge current floor (default 1500), sweetchg_ilim=<mA> input limit floor
- *   (default 0 = leave S-Boot's setting).
+ *   (default 0 = leave S-Boot's setting). sweetbattpoll=<ms> sets the gauge sample interval
+ *   (default 2000 ms, clamp 1000..10000); this only changes status update latency, not charge current.
  */
 #if defined(ARM64_BOARD_CONFIG_SWEET)
 #include <sys/param.h>
@@ -83,6 +84,7 @@ static struct sweet_batt_info mx_info;
 static volatile UInt32 mx_busy;
 static int mx_write_ok = 1, mx_started;
 static uint32_t mx_cc_ma = 1500, mx_ilim_ma = 1200, mx_errs, mx_polls;   /* ilim 1200 mA by default (runs 177-197) */
+static uint32_t mx_poll_ms = 2000;     /* sweetbattpoll=<ms>; status latency only, not charge current */
 static thread_call_t mx_tc;
 
 static void
@@ -400,7 +402,7 @@ mx_poll(void)
 		}
 	}
 	mx_charger_service(first);
-	if (first || (mx_polls % 6) == 0) {   /* once a minute: temperature and current over time */
+	if (first || (mx_polls % (60000u / mx_poll_ms)) == 0) {   /* about once a minute at any poll rate */
 		mx_log("chg: soc %u.%u%% %u mV %d mA chgin %d dtls01 %02x mode %u errs %u temp %d", mx_info.soc_x10 / 10,
 		    mx_info.soc_x10 % 10, mv, mx_info.ma, mx_info.chgin, mx_info.dtls01, mx_info.mode, mx_errs, mx_info.temp_x10);
 	}
@@ -414,7 +416,7 @@ mx_tick(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
 		mx_busy = 0;
 	}
 	uint64_t dl;
-	clock_interval_to_deadline(10, NSEC_PER_SEC, &dl);
+	clock_interval_to_deadline(mx_poll_ms, NSEC_PER_MSEC, &dl);
 	thread_call_enter_delayed(mx_tc, dl);
 }
 
@@ -428,6 +430,17 @@ sweet_max77705_start(void)
 	PE_parse_boot_argn("sweetchg", &mx_write_ok, sizeof(mx_write_ok));
 	PE_parse_boot_argn("sweetchg_cc", &mx_cc_ma, sizeof(mx_cc_ma));
 	PE_parse_boot_argn("sweetchg_ilim", &mx_ilim_ma, sizeof(mx_ilim_ma));
+	{
+		int poll_ms = (int)mx_poll_ms;
+
+		PE_parse_boot_argn("sweetbattpoll", &poll_ms, sizeof(poll_ms));
+		if (poll_ms < 1000) {
+			poll_ms = 1000;
+		} else if (poll_ms > 10000) {
+			poll_ms = 10000;
+		}
+		mx_poll_ms = (uint32_t)poll_ms;
+	}
 	if (mx_cc_ma > 3000) {
 		mx_cc_ma = 3000;
 	}
@@ -450,11 +463,11 @@ sweet_max77705_start(void)
 	mx_us(20);
 	mx_recover();
 	mx_poll();
-	mx_log("chg: started (writes %s, cc floor %u mA, ilim floor %u mA)", mx_write_ok ? "on" : "off",
-	    mx_cc_ma, mx_ilim_ma);
+	mx_log("chg: started (writes %s, cc floor %u mA, ilim floor %u mA, poll %u ms)", mx_write_ok ? "on" : "off",
+	    mx_cc_ma, mx_ilim_ma, mx_poll_ms);
 	mx_tc = thread_call_allocate(mx_tick, NULL);
 	uint64_t dl;
-	clock_interval_to_deadline(10, NSEC_PER_SEC, &dl);
+	clock_interval_to_deadline(mx_poll_ms, NSEC_PER_MSEC, &dl);
 	thread_call_enter_delayed(mx_tc, dl);
 	return mx_info.valid ? 0 : -1;
 }

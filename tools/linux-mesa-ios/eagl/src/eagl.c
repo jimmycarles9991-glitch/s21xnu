@@ -53,8 +53,10 @@
  * unmasked variant for small wrapped sub-icon pictures; V30 also uses a square-mask variant for
  * 100-200 px wrapped expanded icons, disabled by glfolder=0; V32 reads client pictures as RGBA
  * (glorder=0 restores the old byte-order guess); glcolorprobe=1 probes one 180x180 icon from the
- * client's bytes through the texture readback to the pixel its draw actually leaves; glfinish=1
- * restores the old full glFinish() after each surface publish. glcensus=1 keeps count of the draws
+ * client's bytes through the texture readback to the pixel its draw actually leaves; glcolorprobe=2
+ * probes small glyphs too (bounded); glfinish=1 restores the old full glFinish(), glfinish=0 the
+ * V32 zero-timeout flush, and the V33 default waits 2 ms before finishing only on timeout;
+ * glhash=0 restores the full surface checksum. glcensus=1 keeps count of the draws
  * CoreAnimation makes with no program and of the functions it asks for in vain (see census_draw());
  * glshaders=1 writes down
  * the text of every shader, glshow=TEXTURE (or WxH, with glshow_part=W,H and glshow_zoom=N) puts that texture over the corner of the picture, glplain=0 leaves the
@@ -244,8 +246,10 @@ static int group_vibrant_on = 1;        /* boot-arg glgroup=0 */
 static int icon_rgb_fix = 1;            /* boot-arg glcolorfix=0 turns off both V29 variants */
 static int folder_variant_fix = 1;      /* boot-arg glfolder=0 disables the V30 100-200 square-icon variant */
 static int client_rgba_fix = 1;         /* boot-arg glorder=0 restores the V31 byte-order guess */
-static int icon_probe_on = 0;           /* boot-arg glcolorprobe=1 enables the V32 one-icon pixel probe */
-static int surface_finish = 0;          /* boot-arg glfinish=1 restores the old full glFinish() */
+static int icon_probe_on = 0;           /* glcolorprobe=1: 180px icons; =2: any size, plus attached-mask bytes */
+static unsigned icon_probe_textures, icon_probe_draws_logged;   /* bounded so diagnostics do not stall the UI */
+static int surface_finish = 2;          /* 0=fence flush, 1=glFinish, 2=bounded wait then finish on timeout */
+static int surface_hash_fast = 1;       /* boot-arg glhash=0 restores a full checksum even when the seed moved */
 static int swizzle_identity = 0;        /* boot-arg glswizzle=1: identity swizzle on EAGL-owned textures */
 static unsigned group_covered, group_laid, group_flattened;    /* (glframes=1) this frame's */
 
@@ -354,11 +358,11 @@ struct eagl {
 	GLuint alpha_variant[256];      /* an alpha-only tint program, with texture RGB instead of alpha */
 	GLuint square_variant[256];     /* a squareImage-mask program, without the mask */
 	GLuint draw_variant;            /* the variant to use for the draw at hand, if any */
-	/* V31: one 180x180 icon, from the bytes uploaded to the texture through the
+	/* V31/V33: one picture, from the bytes uploaded to the texture through the
 	 * GPU readback of that texture to the pixel its draw leaves on screen. */
 	GLuint probe_texture;
 	uint32_t probe_surface;
-	unsigned probe_draws;
+	unsigned probe_draws, probe_frame;
 	uint8_t probe_client[4], probe_upload[4], probe_gpu[4];
 	bool probe_pending;
 	unsigned plain_said;
@@ -697,6 +701,17 @@ wrapped_order_of(IOSurfaceRef surface, bool target)
 			samples++;
 		}
 	}
+	if (target && icon_probe_on >= 2 && base != NULL && row >= width * 4) {
+		static unsigned mask_told;
+
+		if (mask_told++ < 12) {
+			const uint8_t *q = base + row * (size_t)(height / 2) + (size_t)(width / 2) * 4;
+
+			say("hakios-gl: V33 mask probe: surface %u %zux%zu middle bytes %02x %02x %02x %02x, "
+			    "%zu/%zu opacity first, %zu last\n", IOSurfaceGetID(surface), width, height, q[0], q[1], q[2], q[3],
+			    first_alpha, samples, last_alpha);
+		}
+	}
 	enum wrapped_order order = last_alpha > first_alpha ? WRAPPED_BGRA : WRAPPED_ABGR;
 
 	if (told++ < 128) {
@@ -805,11 +820,20 @@ surface_changed(struct eagl *e, struct image *image)
 	    (size_t)image->width * bytes_a_pixel(image->format, image->type);
 	const uint8_t *base = IOSurfaceGetBaseAddress(surface);
 	uint64_t sum = size, word;
+	uint32_t seed = IOSurfaceGetSeed(surface);
 
 	if (image->looked == e->frames + 1 || base == NULL || IOSurfaceGetPlaneCount(surface) > 0) {
 		return false;
 	}
 	image->looked = e->frames + 1;
+	/* V33: a moved seed already proves the bytes changed. Hashing a 1125x2436
+	 * surface (10.9 MB) on every such bind was pure overhead; glhash=0 keeps
+	 * the old checksum for an A/B boot. */
+	if (surface_hash_fast && seed != image->seed) {
+		image->seed = seed;
+		image->sum = 0;
+		return true;
+	}
 	for (size_t at = 0; at + 8 <= size; at += 8) {
 		memcpy(&word, base + at, 8);
 		sum = (sum ^ word) * 0x9e3779b97f4a7c15ull;
@@ -1010,7 +1034,17 @@ icon_probe_display(struct eagl *e, GLenum type, const void *indices, GLint first
 	if (!icon_probe_on || !e->probe_pending || e->probe_texture == 0) {
 		return;
 	}
-	if (e->bound[0] != e->probe_texture || e->program % 256 != 5) {
+	if (e->bound[0] != e->probe_texture) {
+		return;
+	}
+	/* V33 level 1 keeps V32's program-5-only probe. Level 2 follows the small
+	 * glyph/tint pictures too, which are drawn by other programs. */
+	if (icon_probe_on == 1 && e->program % 256 != 5) {
+		return;
+	}
+	if (icon_probe_draws_logged >= 64) {
+		e->probe_pending = false;
+		e->probe_texture = 0;
 		return;
 	}
 	if (!icon_probe_center(e, type, indices, first, count, &px, &py)) {
@@ -1029,7 +1063,7 @@ icon_probe_display(struct eagl *e, GLenum type, const void *indices, GLint first
 	error = glGetError();
 	glPixelStorei(GL_PACK_ROW_LENGTH, row_length);
 	glPixelStorei(GL_PACK_ALIGNMENT, pack);
-	say("hakios-gl: V32 icon probe: draw program %u variant %u texture %u surface %u framebuffer %u (read %u), "
+	say("hakios-gl: V33 icon probe: draw program %u variant %u texture %u surface %u framebuffer %u (read %u), "
 	    "viewport %d,%d %dx%d, icon pixel %d,%d, client RGBA %u %u %u %u, upload RGBA %u %u %u %u, texture RGBA "
 	    "%u %u %u %u, displayed RGBA %u %u %u %u, error %#x, frame %u\n", e->program, e->draw_variant,
 	    e->probe_texture, e->probe_surface, e->framebuffer, read, view[0], view[1], view[2], view[3], px, py,
@@ -1037,6 +1071,7 @@ icon_probe_display(struct eagl *e, GLenum type, const void *indices, GLint first
 	    e->probe_upload[1], e->probe_upload[2], e->probe_upload[3], e->probe_gpu[0], e->probe_gpu[1], e->probe_gpu[2],
 	    e->probe_gpu[3], rgba[0], rgba[1], rgba[2], rgba[3], error, e->frames + 1);
 	e->probe_draws++;
+	icon_probe_draws_logged++;
 	e->probe_pending = false;               /* one icon is enough to tell the four pixels apart */
 	e->probe_texture = 0;
 }
@@ -1090,7 +1125,12 @@ surface_to_texture(struct eagl *e, struct image *image)
 	uint8_t *base, *flipped = NULL, client[4] = { 0, 0, 0, 0 };
 	bool alpha_first = image->alpha_first && !planar && pixel == 4;
 	bool bgra_for_rgba = image->bgra_for_rgba && !planar && pixel == 4 && image->format == GL_RGBA;
-	bool probe_now = icon_probe_on && image->width == 180 && image->height == 180 && !image->shared && e->probe_texture == 0;
+	/* V33: glcolorprobe=1 keeps the V32 180px-only probe. =2 also covers the
+	 * small glyph/tint pictures (Settings arrows, Control Center, iTunes). */
+	bool probe_now = icon_probe_on != 0 && !image->shared && e->probe_texture == 0 &&
+	    icon_probe_textures < 64 &&
+	    ((icon_probe_on == 1 && image->width == 180 && image->height == 180) ||
+	     (icon_probe_on >= 2 && image->width > 0 && image->height > 0));
 
 	if (image->shared) {
 		return;
@@ -1191,12 +1231,15 @@ surface_to_texture(struct eagl *e, struct image *image)
 					e->probe_surface = IOSurfaceGetID(surface);
 					e->probe_pending = true;
 					e->probe_draws = 0;
+					e->probe_frame = e->frames;
+					icon_probe_textures++;
 					memcpy(e->probe_client, client, sizeof(e->probe_client));
 					memcpy(e->probe_upload, source, sizeof(e->probe_upload));
 					memcpy(e->probe_gpu, gpu, sizeof(e->probe_gpu));
-					say("hakios-gl: V32 icon probe: texture %u surface %u 180x180 row=%zu format %#x/%#x %s%s: "
+					say("hakios-gl: V33 icon probe: texture %u surface %u %zux%zu row=%zu format %#x/%#x %s%s: "
 					    "client bytes %02x %02x %02x %02x -> upload RGBA %u %u %u %u; texture RGBA %u %u %u %u\n",
-					    image->texture, IOSurfaceGetID(surface), row, image->format, image->type,
+					    image->texture, IOSurfaceGetID(surface), (size_t)image->width, (size_t)image->height, row,
+					    image->format, image->type,
 					    image->alpha_first ? "opacity-first " : "", image->bgra_for_rgba ? "blue-first " : "",
 					    client[0], client[1], client[2], client[3], source[0], source[1], source[2], source[3], gpu[0],
 					    gpu[1], gpu[2], gpu[3]);
@@ -1523,6 +1566,11 @@ frame_begin(struct eagl *e)
 	}
 	e->in_frame = true;
 	e->began = now_us();
+	/* A probed texture that is never drawn must not block later probes. */
+	if (e->probe_pending && e->frames >= e->probe_frame + 4) {
+		e->probe_pending = false;
+		e->probe_texture = 0;
+	}
 	eagl_tracing = e->frames + 1 >= trace_first && e->frames + 1 <= trace_last;
 	if ((trace_at != 0 && e->began >= trace_at) || (trace_draws != 0 && e->last_draws == trace_draws) || trace_function_met) {
 		trace_left = trace_frames;      /* (once) */
@@ -5237,8 +5285,18 @@ install(void)
 		icon_rgb_fix = strstr(arguments, "glcolorfix=0") == NULL;
 		folder_variant_fix = strstr(arguments, "glfolder=0") == NULL;
 		client_rgba_fix = strstr(arguments, "glorder=0") == NULL;
-		icon_probe_on = strstr(arguments, "glcolorprobe=1") != NULL;
-		surface_finish = strstr(arguments, "glfinish=1") != NULL;
+		if ((argument = strstr(arguments, "glcolorprobe=")) != NULL) {
+			icon_probe_on = (int)strtoul(argument + 13, NULL, 10);
+		}
+		surface_finish = 2;                     /* V33 bounded wait is the safe default */
+		if (strstr(arguments, "glfinish=0") != NULL) {
+			surface_finish = 0;
+		} else if (strstr(arguments, "glfinish=1") != NULL) {
+			surface_finish = 1;
+		} else if (strstr(arguments, "glfinish=2") != NULL) {
+			surface_finish = 2;
+		}
+		surface_hash_fast = strstr(arguments, "glhash=0") == NULL;
 		hakios_gl_surface_written_mode(surface_finish);
 		if ((argument = strstr(arguments, "gltrace_place=")) != NULL) {
 			char *end = (char *)argument + 14;
@@ -5253,9 +5311,9 @@ install(void)
 		census_on = strstr(arguments, "glcensus=1") != NULL;
 		frame_lines = strstr(arguments, "glframes=1") != NULL;
 		swizzle_identity = strstr(arguments, "glswizzle=1") != NULL;
-		say("hakios-gl: V32 diagnostics: glshaders=%d glcensus=%d glframes=%d glcolorfix=%d glfolder=%d glorder=%d "
-		    "glcolorprobe=%d glfinish=%d glswizzle=%d\n", all_shaders, census_on, frame_lines, icon_rgb_fix,
-		    folder_variant_fix, client_rgba_fix, icon_probe_on, surface_finish, swizzle_identity);
+		say("hakios-gl: V33 diagnostics: glshaders=%d glcensus=%d glframes=%d glcolorfix=%d glfolder=%d glorder=%d "
+		    "glcolorprobe=%d glfinish=%d glhashfast=%d glswizzle=%d\n", all_shaders, census_on, frame_lines, icon_rgb_fix,
+		    folder_variant_fix, client_rgba_fix, icon_probe_on, surface_finish, surface_hash_fast, swizzle_identity);
 		latency_lines = strstr(arguments, "touch_lat=1") != NULL;
 		if ((argument = strstr(arguments, "glslow=")) != NULL) {
 			slow_calls_us = strtoull(argument + 7, NULL, 10);

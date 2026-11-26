@@ -23,7 +23,7 @@ int hakios_gl_surface_texture(struct hakios_gl *gl, uint32_t surface);
 /* (Galaxy S7 port) The GPU has drawn into that surface's memory: make it visible to the CPU and the display. */
 void hakios_gl_surface_written(struct hakios_gl *gl, uint32_t surface);
 
-/* V32: 1 waits with glFinish() as before; 0 only flushes queued work through a fence and does not wait. */
+/* V33: 0 = V32 zero-timeout fence flush, 1 = glFinish(), 2 = 2 ms fence wait then glFinish() on timeout. */
 void hakios_gl_surface_written_mode(int finish);
 
 /*

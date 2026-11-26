@@ -15,7 +15,8 @@ cat > iokit/Kernel/arm/S21Battery.cpp <<'EOF_SWEET_SRC'
  *
  * Values: sweet_max77705_get() (0123): RepSOC, VCELL, current, CHGIN and charger state. Capacity in
  * mAh against the S21 battery's nominal 4000 mAh (SM-G991 EB-BG991ABY), so CurrentCapacity *
- * 100 / MaxCapacity is the gauge's percentage.
+ * 100 / MaxCapacity is the gauge's percentage. sweetbattpoll=<ms> sets how often the source is
+ * republished (default 2000 ms, clamp 1000..10000); it changes status latency, not charge current.
  */
 #if defined(ARM64_BOARD_CONFIG_SWEET)
 #include <device/device_types.h>
@@ -50,7 +51,7 @@ public:
 private:
 	IOWorkLoop *fLoop;
 	IOTimerEventSource *fTimer;
-	int fLastPct, fLastChg;
+	int fLastPct, fLastChg, fPollMs;
 	void putNumber(const char *key, UInt32 value);
 	void putBool(const char *key, bool value);
 	void poll(void);
@@ -159,7 +160,7 @@ S21Battery::timerFired(OSObject *owner, IOTimerEventSource *sender)
 	S21Battery *self = OSDynamicCast(S21Battery, owner);
 	if (self) {
 		self->poll();
-		sender->setTimeoutMS(20000);
+		sender->setTimeoutMS(self->fPollMs);
 	}
 }
 
@@ -171,13 +172,30 @@ S21Battery::start(IOService *provider)
 	}
 	fLastPct = -1;
 	fLastChg = -1;
+	{
+		int poll_ms = 2000;
+
+		PE_parse_boot_argn("sweetbattpoll", &poll_ms, sizeof(poll_ms));
+		if (poll_ms < 1000) {
+			poll_ms = 1000;
+		} else if (poll_ms > 10000) {
+			poll_ms = 10000;
+		}
+		fPollMs = poll_ms;
+	}
 	poll();   /* complete source before registerService wakes powerd */
 	fLoop = IOWorkLoop::workLoop();
 	fTimer = IOTimerEventSource::timerEventSource(this, &S21Battery::timerFired);
 	if (fLoop && fTimer && fLoop->addEventSource(fTimer) == kIOReturnSuccess) {
-		fTimer->setTimeoutMS(20000);
+		fTimer->setTimeoutMS(fPollMs);
 	} else {
 		sweet_mali_log_str("chg: battery timer unavailable");
+	}
+	{
+		char ln[80];
+
+		snprintf(ln, sizeof(ln), "chg: battery source poll %d ms", fPollMs);
+		sweet_mali_log_str(ln);
 	}
 	registerService();
 	return true;
@@ -196,7 +214,7 @@ sweet_s21_battery_start(void)
 	if (mode != 2) {
 		return -1;
 	}
-	(void)sweet_max77705_start();   /* polls (and services the charger) every 10 s on its own */
+	(void)sweet_max77705_start();   /* samples/charges at the same sweetbattpoll rate */
 	IOService *res = IOService::getResourceService();
 	S21Battery *b = OSTypeAlloc(S21Battery);
 	if (!res || !b || !b->init()) {
