@@ -562,15 +562,40 @@ hakios_gl_surface_texture(struct hakios_gl *gl, uint32_t surface_id)
 	return entry != NULL && entry->image != EGL_NO_IMAGE_KHR;
 }
 
+/* V32: the shim's submit is synchronous, and eagl.c already sends the blit
+ * through the IOKit pair. A full glFinish() made CoreAnimation wait for every
+ * GPU job before it could publish the next layer; a fence with a zero-timeout
+ * flush sends queued work without waiting behind it. glfinish=1 restores the
+ * old behaviour for an A/B boot. */
+static int surface_finish_mode;
+
+void
+hakios_gl_surface_written_mode(int finish)
+{
+	static int told;
+
+	surface_finish_mode = finish != 0;
+	if (told++ == 0) {
+		sayf("S21EAGL: V32 surface publish mode: %s\n", surface_finish_mode ? "glFinish" : "fence flush");
+	}
+}
+
 void
 hakios_gl_surface_written(struct hakios_gl *gl, uint32_t surface)
 {
 	(void)gl;
 	(void)surface;
 
-	/* Submits are synchronous in the shim, but CoreAnimation publishes the
-	 * surface as soon as we return; make the GPU blit visible before then. */
-	glFinish();
+	if (surface_finish_mode) {
+		glFinish();
+		return;
+	}
+	GLsync sync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+
+	if (sync != 0) {
+		(void)glClientWaitSync(sync, GL_SYNC_FLUSH_COMMANDS_BIT, 0);
+		glDeleteSync(sync);
+	}
 }
 
 /* ES1 entry in iOS's macro table that Mesa's ES3 library does not export.

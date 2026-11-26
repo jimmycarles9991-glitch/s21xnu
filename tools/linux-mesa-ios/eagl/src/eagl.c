@@ -51,9 +51,10 @@
  * time, and glcolorfix=0 turns off its two shader variants (see program_variants()): alpha-only
  * tint programs get an RGB variant for full app icons, and squareImage-mask programs get an
  * unmasked variant for small wrapped sub-icon pictures; V30 also uses a square-mask variant for
- * 100-200 px wrapped expanded icons, disabled by glfolder=0; V31 probes one 180x180 icon from its
- * source bytes through the texture readback to the pixel its draw leaves, disabled by
- * glcolorprobe=0; glcensus=1 keeps count of the draws
+ * 100-200 px wrapped expanded icons, disabled by glfolder=0; V32 reads client pictures as RGBA
+ * (glorder=0 restores the old byte-order guess); glcolorprobe=1 probes one 180x180 icon from the
+ * client's bytes through the texture readback to the pixel its draw actually leaves; glfinish=1
+ * restores the old full glFinish() after each surface publish. glcensus=1 keeps count of the draws
  * CoreAnimation makes with no program and of the functions it asks for in vain (see census_draw());
  * glshaders=1 writes down
  * the text of every shader, glshow=TEXTURE (or WxH, with glshow_part=W,H and glshow_zoom=N) puts that texture over the corner of the picture, glplain=0 leaves the
@@ -112,6 +113,8 @@ typedef GLDEBUGPROC GLDEBUGPROCKHR;
 #define GL_PACK_ALIGNMENT               0x0d05
 #define GL_TEXTURE_2D                   0x0de1
 #define GL_UNSIGNED_BYTE                0x1401
+#define GL_UNSIGNED_SHORT               0x1403
+#define GL_FLOAT                        0x1406
 #define GL_RED                          0x1903
 #define GL_GREEN                        0x1904
 #define GL_BLUE                         0x1905
@@ -240,7 +243,9 @@ struct group_texture {
 static int group_vibrant_on = 1;        /* boot-arg glgroup=0 */
 static int icon_rgb_fix = 1;            /* boot-arg glcolorfix=0 turns off both V29 variants */
 static int folder_variant_fix = 1;      /* boot-arg glfolder=0 disables the V30 100-200 square-icon variant */
-static int icon_probe_on = 1;           /* boot-arg glcolorprobe=0 disables the V31 one-icon pixel probe */
+static int client_rgba_fix = 1;         /* boot-arg glorder=0 restores the V31 byte-order guess */
+static int icon_probe_on = 0;           /* boot-arg glcolorprobe=1 enables the V32 one-icon pixel probe */
+static int surface_finish = 0;          /* boot-arg glfinish=1 restores the old full glFinish() */
 static int swizzle_identity = 0;        /* boot-arg glswizzle=1: identity swizzle on EAGL-owned textures */
 static unsigned group_covered, group_laid, group_flattened;    /* (glframes=1) this frame's */
 
@@ -354,6 +359,7 @@ struct eagl {
 	GLuint probe_texture;
 	uint32_t probe_surface;
 	unsigned probe_draws;
+	uint8_t probe_client[4], probe_upload[4], probe_gpu[4];
 	bool probe_pending;
 	unsigned plain_said;
 };
@@ -636,11 +642,15 @@ image_forget(struct eagl *e, GLuint texture)
 }
 
 /* V22: a surface with no pixel format is client memory wrapped by IOSurface.
- * iOS often asks for GL_RGBA while the bytes are really BGRA (ANGLE does the
- * same swizzle on iOS). Guess from the content instead of assuming every such
- * surface is opacity-first ABGR: an opaque image has 0xff in its alpha byte,
- * which is byte 0 for ABGR and byte 3 for BGRA. */
-enum wrapped_order { WRAPPED_ABGR, WRAPPED_BGRA };
+ * V32: every format-0 picture passed to -texImageIOSurface: is read in the
+ * RGBA order CoreAnimation asked for. V31's opacity sampler and its V23
+ * large-picture BGRA rule were guesses: 180x180 icons with bytes 00 7a ff ff
+ * were uploaded as ff 7a 00 ff, which is exactly blue appearing yellow, and
+ * small Clock-like pictures were rotated until their alpha was the red byte,
+ * which makes them disappear. Keep the sampler only for attached surfaces,
+ * where it has always classified black masks correctly. glorder=0 restores
+ * the old behaviour for an A/B boot. */
+enum wrapped_order { WRAPPED_ABGR, WRAPPED_BGRA, WRAPPED_RGBA };
 
 static enum wrapped_order
 wrapped_order_of(IOSurfaceRef surface, bool target)
@@ -656,12 +666,16 @@ wrapped_order_of(IOSurfaceRef surface, bool target)
 	    IOSurfaceGetBytesPerElement(surface) != 4 || base == NULL || row < width * 4)
 		return WRAPPED_ABGR;
 
-	/* V26: restore V23's only proven classification. Large format-0 pictures
-	 * passed to -texImageIOSurface: are client images whose bytes are BGRA;
-	 * small Clock-like masks and all attached surfaces still need the opacity
-	 * sampler. V25 forced every texImage surface to BGRA and made the frame
-	 * median worse without making the sub-icons visible, so do not repeat it. */
-	if (width >= 100 || height >= 100) {
+	if (!target && client_rgba_fix) {
+		if (told++ < 128)
+			say("hakios-gl: V32: wrapped surface %u (%zux%zu, texImage) byte order: RGBA (client picture)\n",
+			    IOSurfaceGetID(surface), width, height);
+		return WRAPPED_RGBA;
+	}
+	/* glorder=0: V26/V31's only proven classification. Large format-0 pictures
+	 * were treated as BGRA; small Clock-like masks and attached surfaces used
+	 * the opacity sampler. */
+	if (!target && (width >= 100 || height >= 100)) {
 		if (told++ < 128)
 			say("hakios-gl: wrapped surface %u (%zux%zu, texImage) byte order: BGRA (large client picture)\n",
 			    IOSurfaceGetID(surface), width, height);
@@ -885,7 +899,7 @@ icon_probe_rgba(const uint8_t *raw, GLenum format, uint8_t rgba[4])
 
 /* V31: read one pixel back from the texture that has just been filled. The
  * result is what Mesa will sample when the icon is drawn; comparing it with
- * the source bytes says whether the problem is the upload or a later draw. */
+ * the client's bytes says whether the problem is the upload or a later draw. */
 static bool
 icon_probe_read_texture(struct eagl *e, struct image *image, uint8_t rgba[4])
 {
@@ -920,19 +934,78 @@ icon_probe_read_texture(struct eagl *e, struct image *image, uint8_t rgba[4])
 	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)draw);
 	glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)read);
 	if (!ok) {
-		say("hakios-gl: V31 icon probe: texture %u cannot be read (status/error %#x)\n", image->texture, error);
+		say("hakios-gl: V32 icon probe: texture %u cannot be read (status/error %#x)\n", image->texture, error);
 	}
 	return ok;
 }
 
-/* V31: after program 5 has drawn the icon, read the pixel it left in the
- * middle of its viewport. This is the display-side half of the probe. */
+/* V32: where the middle of this draw lands in the framebuffer. V31 sampled
+ * the middle of the whole viewport, which for a full-screen CoreAnimation
+ * frame is the wallpaper, not the icon quad. Use attribute 0 and the matrix
+ * CoreAnimation gave the program, as gltrace_look does. */
+static bool
+icon_probe_center(struct eagl *e, GLenum type, const void *indices, GLint first, GLsizei count, int *px_out, int *py_out)
+{
+	static const GLfloat identity[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+	const GLfloat *m = e->matrix != NULL ? e->matrix : identity;
+	float low[2] = { 1e9f, 1e9f }, high[2] = { -1e9f, -1e9f }, mid[2], x, y, w;
+	GLsizei stride = e->arrays[0].stride;
+	GLint view[4] = { 0, 0, 0, 0 };
+	int px, py;
+
+	if (e->arrays[0].pointer == NULL || e->arrays[0].type != GL_FLOAT) {
+		return false;
+	}
+	if (stride <= 0) {
+		stride = (GLsizei)(2 * sizeof(float));
+	}
+	for (GLsizei i = 0; i < count && i < 96; i++) {
+		unsigned vertex = indices == NULL ? (unsigned)(first + i) : type == GL_UNSIGNED_SHORT ?
+		    ((const uint16_t *)indices)[i] : type == GL_UNSIGNED_BYTE ? ((const uint8_t *)indices)[i] :
+		    ((const uint32_t *)indices)[i];
+		const uint8_t *at = (const uint8_t *)e->arrays[0].pointer + (size_t)vertex * (size_t)stride;
+		float place[2];
+
+		memcpy(place, at, sizeof(place));
+		for (unsigned axis = 0; axis < 2; axis++) {
+			low[axis] = place[axis] < low[axis] ? place[axis] : low[axis];
+			high[axis] = place[axis] > high[axis] ? place[axis] : high[axis];
+		}
+	}
+	if (low[0] > high[0] || low[1] > high[1]) {
+		return false;
+	}
+	mid[0] = (low[0] + high[0]) / 2;
+	mid[1] = (low[1] + high[1]) / 2;
+	x = m[0] * mid[0] + m[4] * mid[1] + m[12];
+	y = m[1] * mid[0] + m[5] * mid[1] + m[13];
+	w = m[3] * mid[0] + m[7] * mid[1] + m[15];
+	if (w == 0) {
+		return false;
+	}
+	glGetIntegerv(GL_VIEWPORT, view);
+	if (view[2] <= 0 || view[3] <= 0) {
+		return false;
+	}
+	px = view[0] + (int)((x / w + 1) / 2 * (float)view[2]);
+	py = view[1] + (int)((y / w + 1) / 2 * (float)view[3]);
+	if (px < view[0] || px >= view[0] + view[2] || py < view[1] || py >= view[1] + view[3]) {
+		return false;
+	}
+	*px_out = px;
+	*py_out = py;
+	return true;
+}
+
+/* V32: after program 5 has drawn the icon, read the pixel at the middle of
+ * the icon itself. This is the display-side half of the probe. */
 static void
-icon_probe_display(struct eagl *e)
+icon_probe_display(struct eagl *e, GLenum type, const void *indices, GLint first, GLsizei count)
 {
 	GLint view[4] = { 0, 0, 0, 0 }, read = 0, pack = 4, row_length = 0;
 	uint8_t rgba[4] = { 0, 0, 0, 0 };
 	GLenum error;
+	int px, py;
 
 	if (!icon_probe_on || !e->probe_pending || e->probe_texture == 0) {
 		return;
@@ -940,11 +1013,11 @@ icon_probe_display(struct eagl *e)
 	if (e->bound[0] != e->probe_texture || e->program % 256 != 5) {
 		return;
 	}
-	glGetIntegerv(GL_VIEWPORT, view);
-	glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read);
-	if (view[2] <= 0 || view[3] <= 0) {
+	if (!icon_probe_center(e, type, indices, first, count, &px, &py)) {
 		return;
 	}
+	glGetIntegerv(GL_VIEWPORT, view);
+	glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read);
 	glGetIntegerv(GL_PACK_ALIGNMENT, &pack);
 	glGetIntegerv(GL_PACK_ROW_LENGTH, &row_length);
 	glPixelStorei(GL_PACK_ROW_LENGTH, 0);
@@ -952,16 +1025,19 @@ icon_probe_display(struct eagl *e)
 	while (glGetError() != 0) {
 		/* discard errors left by earlier calls */
 	}
-	glReadPixels(view[0] + view[2] / 2, view[1] + view[3] / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+	glReadPixels(px, py, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
 	error = glGetError();
 	glPixelStorei(GL_PACK_ROW_LENGTH, row_length);
 	glPixelStorei(GL_PACK_ALIGNMENT, pack);
-	say("hakios-gl: V31 icon probe: draw program %u variant %u texture %u surface %u framebuffer %u (read %u), "
-	    "viewport %d,%d %dx%d, middle RGBA %u %u %u %u, error %#x, frame %u\n", e->program, e->draw_variant,
-	    e->probe_texture, e->probe_surface, e->framebuffer, read, view[0], view[1], view[2], view[3], rgba[0],
-	    rgba[1], rgba[2], rgba[3], error, e->frames + 1);
+	say("hakios-gl: V32 icon probe: draw program %u variant %u texture %u surface %u framebuffer %u (read %u), "
+	    "viewport %d,%d %dx%d, icon pixel %d,%d, client RGBA %u %u %u %u, upload RGBA %u %u %u %u, texture RGBA "
+	    "%u %u %u %u, displayed RGBA %u %u %u %u, error %#x, frame %u\n", e->program, e->draw_variant,
+	    e->probe_texture, e->probe_surface, e->framebuffer, read, view[0], view[1], view[2], view[3], px, py,
+	    e->probe_client[0], e->probe_client[1], e->probe_client[2], e->probe_client[3], e->probe_upload[0],
+	    e->probe_upload[1], e->probe_upload[2], e->probe_upload[3], e->probe_gpu[0], e->probe_gpu[1], e->probe_gpu[2],
+	    e->probe_gpu[3], rgba[0], rgba[1], rgba[2], rgba[3], error, e->frames + 1);
 	e->probe_draws++;
-	e->probe_pending = false;               /* one icon is enough to tell the three pixels apart */
+	e->probe_pending = false;               /* one icon is enough to tell the four pixels apart */
 	e->probe_texture = 0;
 }
 
@@ -1011,9 +1087,10 @@ surface_to_texture(struct eagl *e, struct image *image)
 	size_t row = planar ? IOSurfaceGetBytesPerRowOfPlane(surface, image->plane) : IOSurfaceGetBytesPerRow(surface);
 	unsigned pixel = bytes_a_pixel(image->format, image->type);
 	GLint row_length = 0, alignment = 4;
-	uint8_t *base, *flipped = NULL;
+	uint8_t *base, *flipped = NULL, client[4] = { 0, 0, 0, 0 };
 	bool alpha_first = image->alpha_first && !planar && pixel == 4;
 	bool bgra_for_rgba = image->bgra_for_rgba && !planar && pixel == 4 && image->format == GL_RGBA;
+	bool probe_now = icon_probe_on && image->width == 180 && image->height == 180 && !image->shared && e->probe_texture == 0;
 
 	if (image->shared) {
 		return;
@@ -1023,6 +1100,13 @@ surface_to_texture(struct eagl *e, struct image *image)
 		return;
 	}
 	base = planar ? IOSurfaceGetBaseAddressOfPlane(surface, image->plane) : IOSurfaceGetBaseAddress(surface);
+	if (probe_now && pixel > 0) {
+		const uint8_t *at = base + row * (size_t)(image->height / 2) + (size_t)(image->width / 2) * pixel;
+
+		for (GLsizei i = 0; i < pixel && i < 4; i++) {
+			client[i] = at[i];
+		}
+	}
 	if ((image->invert || alpha_first || bgra_for_rgba) && (flipped = calloc(row, (size_t)image->height)) != NULL) {
 		for (GLsizei y = 0; y < image->height; y++) {
 			const uint8_t *from = base + row * (size_t)(image->invert ? image->height - 1 - y : y);
@@ -1095,7 +1179,7 @@ surface_to_texture(struct eagl *e, struct image *image)
 			    "lit, %zu not clear; the middle %02x %02x %02x %02x\n", image->texture, IOSurfaceGetID(surface),
 			    IOSurfaceGetSeed(surface), image->format, image->type, row, lit, image->width * image->height, opaque,
 			    middle[0], middle[1], middle[2], middle[3]);
-			if (icon_probe_on && image->width == 180 && image->height == 180 && !image->shared && e->probe_texture == 0) {
+			if (probe_now) {
 				uint8_t raw[4] = { 0, 0, 0, 0 }, source[4] = { 0, 0, 0, 0 }, gpu[4] = { 0, 0, 0, 0 };
 
 				for (GLsizei i = 0; i < pixel && i < 4; i++) {
@@ -1107,12 +1191,15 @@ surface_to_texture(struct eagl *e, struct image *image)
 					e->probe_surface = IOSurfaceGetID(surface);
 					e->probe_pending = true;
 					e->probe_draws = 0;
-					say("hakios-gl: V31 icon probe: texture %u surface %u 180x180 row=%zu format %#x/%#x %s%s: "
-					    "source bytes %02x %02x %02x %02x -> RGBA %u %u %u %u; texture readback RGBA %u %u %u %u\n",
+					memcpy(e->probe_client, client, sizeof(e->probe_client));
+					memcpy(e->probe_upload, source, sizeof(e->probe_upload));
+					memcpy(e->probe_gpu, gpu, sizeof(e->probe_gpu));
+					say("hakios-gl: V32 icon probe: texture %u surface %u 180x180 row=%zu format %#x/%#x %s%s: "
+					    "client bytes %02x %02x %02x %02x -> upload RGBA %u %u %u %u; texture RGBA %u %u %u %u\n",
 					    image->texture, IOSurfaceGetID(surface), row, image->format, image->type,
 					    image->alpha_first ? "opacity-first " : "", image->bgra_for_rgba ? "blue-first " : "",
-					    raw[0], raw[1], raw[2], raw[3], source[0], source[1], source[2], source[3], gpu[0], gpu[1],
-					    gpu[2], gpu[3]);
+					    client[0], client[1], client[2], client[3], source[0], source[1], source[2], source[3], gpu[0],
+					    gpu[1], gpu[2], gpu[3]);
 				}
 			}
 		}
@@ -1838,8 +1925,6 @@ trace_pixels(struct eagl *e)
 #define GL_TEXTURE_WRAP_T               0x2803
 #define GL_TEXTURE_MAG_FILTER           0x2800
 #define GL_TEXTURE0                     0x84c0
-#define GL_UNSIGNED_SHORT               0x1403
-#define GL_FLOAT                        0x1406
 #define GL_HALF_FLOAT                   0x140b
 
 static float half_float(uint16_t half);
@@ -3812,7 +3897,7 @@ my_glDrawArrays(void *context, GLenum mode, GLint first, GLsizei count)
 		}
 	}
 	draw_variant_end(e, variant);
-	icon_probe_display(e);
+	icon_probe_display(e, 0, NULL, first, count);
 	if (trace_listed) {
 		trace_placed_look(e);
 	}
@@ -3856,7 +3941,7 @@ my_glDrawElements(void *context, GLenum mode, GLsizei count, GLenum type, const 
 		}
 	}
 	draw_variant_end(e, variant);
-	icon_probe_display(e);
+	icon_probe_display(e, type, indices, 0, count);
 	if (trace_listed) {
 		trace_placed_look(e);
 	}
@@ -4925,14 +5010,16 @@ my_texImageIOSurface(id self, SEL selector, IOSurfaceRef surface, unsigned long 
 		    IOSurfaceGetWidth(surface), IOSurfaceGetHeight(surface), IOSurfaceGetPlaneCount(surface), texture, width,
 		    height, plane, invert ? ", inverted" : "");
 	}
-	/* V22: client memory wrapped by IOSurface has no fourcc. Some of it is
-	 * opacity-first ABGR, but app icons are often BGRA even though they are
-	 * asked for as GL_RGBA. Detect the byte order instead of guessing. */
+	/* V22: client memory wrapped by IOSurface has no fourcc. V32: a picture
+	 * handed to -texImageIOSurface: keeps the RGBA order it asked for; the
+	 * opacity-first ABGR case here belongs to attached masks. */
 	image->wrapped = IOSurfaceGetPixelFormat(surface) == 0;
-	if (image->wrapped && wrapped_order_of(surface, false) == WRAPPED_BGRA) {
+	enum wrapped_order order = image->wrapped ? wrapped_order_of(surface, false) : WRAPPED_RGBA;
+
+	if (order == WRAPPED_BGRA) {
 		image->bgra_for_rgba = image->format == GL_RGBA;
-	} else {
-		image->alpha_first = image->wrapped;
+	} else if (order == WRAPPED_ABGR) {
+		image->alpha_first = true;
 	}
 	began = now_us();
 	if (!surface_shared(e, image)) {
@@ -5149,7 +5236,10 @@ install(void)
 		group_vibrant_on = strstr(arguments, "glgroup=0") == NULL;
 		icon_rgb_fix = strstr(arguments, "glcolorfix=0") == NULL;
 		folder_variant_fix = strstr(arguments, "glfolder=0") == NULL;
-		icon_probe_on = strstr(arguments, "glcolorprobe=0") == NULL;
+		client_rgba_fix = strstr(arguments, "glorder=0") == NULL;
+		icon_probe_on = strstr(arguments, "glcolorprobe=1") != NULL;
+		surface_finish = strstr(arguments, "glfinish=1") != NULL;
+		hakios_gl_surface_written_mode(surface_finish);
 		if ((argument = strstr(arguments, "gltrace_place=")) != NULL) {
 			char *end = (char *)argument + 14;
 
@@ -5163,9 +5253,9 @@ install(void)
 		census_on = strstr(arguments, "glcensus=1") != NULL;
 		frame_lines = strstr(arguments, "glframes=1") != NULL;
 		swizzle_identity = strstr(arguments, "glswizzle=1") != NULL;
-		say("hakios-gl: V31 diagnostics: glshaders=%d glcensus=%d glframes=%d glcolorfix=%d glfolder=%d glcolorprobe=%d "
-		    "glswizzle=%d\n", all_shaders, census_on, frame_lines, icon_rgb_fix, folder_variant_fix, icon_probe_on,
-		    swizzle_identity);
+		say("hakios-gl: V32 diagnostics: glshaders=%d glcensus=%d glframes=%d glcolorfix=%d glfolder=%d glorder=%d "
+		    "glcolorprobe=%d glfinish=%d glswizzle=%d\n", all_shaders, census_on, frame_lines, icon_rgb_fix,
+		    folder_variant_fix, client_rgba_fix, icon_probe_on, surface_finish, swizzle_identity);
 		latency_lines = strstr(arguments, "touch_lat=1") != NULL;
 		if ((argument = strstr(arguments, "glslow=")) != NULL) {
 			slow_calls_us = strtoull(argument + 7, NULL, 10);
