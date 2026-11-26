@@ -352,6 +352,17 @@ importable(IOSurfaceRef surface, size_t *row_out, size_t *height_out,
 		import_refused("shape", surface, row, height, 0, 0);
 		return false;
 	}
+	/* V31: Panfrost checks the WSI row pitch against the modifier's buffer
+	 * alignment before it can import a dma-buf. A 120x120 BGRA picture has a
+	 * 480-byte row and a 5152-byte row was seen too; neither is 64-byte
+	 * aligned, so both were doomed to EGL_BAD_ALLOC after Mesa logged
+	 * "WSI pitch not properly aligned". Refuse them here and use the CPU
+	 * copy without the failed EGLImage round trip. The 4608-byte display
+	 * rows remain importable. */
+	if ((row & 63) != 0) {
+		import_refused("row pitch/64", surface, row, height, 0, 0);
+		return false;
+	}
 	needed = row * height;
 	alloc = IOSurfaceGetAllocSize(surface);
 	/* kSMImportUser maps whole 4 KiB pages and requires a page-multiple length.
