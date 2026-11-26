@@ -1,0 +1,26 @@
+name: s21-icon-probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build S21IconProbe IPA
+        run: |
+          set -euo pipefail
+          OUT_DIR="$GITHUB_WORKSPACE/out/s21-icon-probe" \
+            bash tools/s21-icon-probe/build.sh
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: s21-icon-probe
+          path: out/s21-icon-probe/
+          if-no-files-found: error
