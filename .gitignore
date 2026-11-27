@@ -4,6 +4,8 @@ dtb/
 recovery/
 # third-party/Apple sources fetched for reading
 research/
+# D22AP DeviceTree extracted from the IPSW for tools/mkadt.py; Apple artifact
+research/ipsw-x/*.adt
 shim/out/
 xnu/out/
 xnu/out-*/
