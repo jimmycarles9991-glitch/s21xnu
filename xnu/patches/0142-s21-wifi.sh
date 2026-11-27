@@ -1,49 +1,48 @@
 #!/bin/bash
 # S21 (o1s, SM-G991N) Wi-Fi: the BCM4375 B1 on Exynos 2100 PCIe channel 0.
 #
-# The chip driver, the station, en0, the Apple80211 answers and the WPA2 handshake are N1709/z3sios's (MIT; XNU-derived
-# parts APSL 2.0; brcmfmac-derived parts ISC): the S20 Ultra port runs the same chip with the same firmware
-# (18.41.117) in XNU. Those files are fetched unmodified at a pinned commit and checked by SHA-256 (credits:
-# THIRD_PARTY_Z3SIOS.md). What is the S21's is bsd/dev/sweet_wifi.c below: the PCIe link on this SoC, the S2MPU
-# grants for the DMA pool, and the few functions the z3sios files expect from their loader.
+# The chip driver, the station, en0, the Apple80211 answers and the WPA2 handshake come from Jesvi's S20+ port of
+# the same BCM4375 B1 (MIT; XNU-derived parts APSL 2.0; brcmfmac-derived parts ISC), pinned to a public commit and
+# checked by SHA-256. The S21's own part is bsd/dev/sweet_wifi.c below: the Exynos 2100 PCIe link, the S2MPU grants
+# for the DMA pool, and the loader hooks (root-backed /fw files) the Jesvi files expect.
 # dxb runs patches/*.sh from the XNU source root before applying *.patch.
 set -euo pipefail
 [[ "${MACHINE_CONFIG:-}" == SWEET ]] || exit 0
 [[ -f bsd/conf/files ]] || exit 1
 [[ -f iokit/Kernel/arm/SweetMali.cpp ]] || exit 1   # 0112 runs first; RedwoodWLAN.cpp is appended to it
 
-Z3S_SHA=1323aa51d4c16816fa8fd95309f864f7e3888793
-Z3S_RAW=https://raw.githubusercontent.com/N1709/z3sios/$Z3S_SHA/kernel/xnu/files
-z3s_tmp=$(mktemp -d)
-trap 'rm -rf "$z3s_tmp"' EXIT
+JESVI_SHA=d16b3b98e34fd625dd931c98f19644f7498aab04
+JESVI_RAW=https://raw.githubusercontent.com/jesvi-eulah/Jesvi-iOS/$JESVI_SHA/xnu/files
+jesvi_tmp=$(mktemp -d)
+trap 'rm -rf "$jesvi_tmp"' EXIT
 while read -r sum path; do
-	out="$z3s_tmp/$(basename "$path")"
+	out="$jesvi_tmp/$(basename "$path")"
 	for try in 1 2 3 4 5; do
-		curl -fsSL --retry 3 -o "$out" "$Z3S_RAW/$path" && break
+		curl -fsSL --retry 3 -o "$out" "$JESVI_RAW/$path" && break
 		sleep $((try * 5))
 	done
 	got=$(shasum -a 256 "$out" | cut -c1-64)
-	[[ "$got" == "$sum" ]] || { echo "z3sios $path: sha256 $got, want $sum" >&2; exit 1; }
+	[[ "$got" == "$sum" ]] || { echo "Jesvi $path: sha256 $got, want $sum" >&2; exit 1; }
 done <<'EOF_SUMS'
-f34eb5a7bdfd6c2efa211e3f9d1369c8d33cc1efcdddcd5512712fab653c55ed bsd/dev/redwood_bcm4375.c
-9d85fe742d8992f8f6928bc2c20f03a5278d9ce73c78b4617755c1e1643b13ca bsd/dev/redwood_sta.c
-7002f03c339f87d3addb19b8a184391b3b51efe094b01ff7e0422b6b0ead2756 bsd/dev/redwood_net.c
-2fa706682c63f80f08a538e5d9d3a2b45f8265573b355bb585b1f3cca76b706c bsd/dev/redwood_apple80211.c
-67a5511bb42330fc2158d1d86595cfc8e6db732cda559378263e37229b5117da bsd/dev/lx_wpa.c
-719feef82ee63a10066cdecd4a7d62ed62d03e4811ae35cc1ecfc956bb0f9f12 bsd/dev/lx_wpa.h
+4812a300f426fe731e4816e3931ff77df3b8d33b9f0faa6cc722a50555c3b002 bsd/dev/redwood_bcm4375.c
+de85ba61e9bc3773adcc8b05124ebe3b39f987c479ddbca86eeb59a5d36b2044 bsd/dev/redwood_sta.c
+93417a3be67ad2427dc34ec59c3bf17994dbd9c301b9425ea2bee2d971043e45 bsd/dev/redwood_net.c
+78e9cf06a2832a067ad792d95c6247a21f764113e8fd6a9c7404dd10e41bfca1 bsd/dev/redwood_apple80211.c
+a3da59228e62ddf3068b2db6c2c993b141865e8a724b87a083f6cd67560d06f8 bsd/dev/lx_wpa.c
+7b47913cc422e7d65060a0d6b5720997ae8047deeab6f2cdb50525aa1fbfbec8 bsd/dev/lx_wpa.h
 f122714b56d0c22a3b546e67b6ff4d813753652e520b60d1e0c755a0102c3065 bsd/sys/redwood_net.h
-6d8aebca76634178dfd0c24584dc85ceacb5b8a003b476cbf3189bb730e3d9eb bsd/sys/redwood_sta.h
+43732a5e2dbd81fb7307a45dcd13f2d039405b21a587c68aa037cf668d19d3ec bsd/sys/redwood_sta.h
 5b00cd093e1b806c300d17f3d2bd0f4fbd41cb266cdf992756d88c5087ab7b02 bsd/sys/redwood_input.h
-7b7b3c4dec2d5d3d1e773a41e95c5b19f6d3a93a20edc30b630c62f3bd0f784c iokit/Kernel/RedwoodWLAN.cpp
+350bc1ed1d12723b62d981094e84b20219caa7321e170afe9181312af58ca14b iokit/Kernel/RedwoodWLAN.cpp
 EOF_SUMS
 
 for f in redwood_bcm4375.c redwood_sta.c redwood_net.c redwood_apple80211.c lx_wpa.c lx_wpa.h; do
-	cp "$z3s_tmp/$f" bsd/dev/
+	cp "$jesvi_tmp/$f" bsd/dev/
 done
 for f in redwood_net.h redwood_sta.h redwood_input.h; do
-	cp "$z3s_tmp/$f" bsd/sys/
+	cp "$jesvi_tmp/$f" bsd/sys/
 done
-# their printf lines (wifid's Apple80211 requests, en0's events) go to the console, which this kernel does not keep:
+# Their printf lines (wifid's Apple80211 requests, en0's events) go to the console, which this kernel does not keep:
 # routed to sweet_wifi_printf (bsd/dev/sweet_wifi.c: the persistent log, the first 150 lines kept)
 for f in redwood_net.c redwood_apple80211.c; do
 	perl -pi -e 's/\bprintf\(/sweet_wifi_printf(/g' "bsd/dev/$f"
@@ -52,9 +51,9 @@ done
 # the IOKit objects iOS finds the interface by: compiled as part of SweetMali.cpp (adding a line to files.arm64 here
 # breaks every later patch of that list, see 0127); its file-local helper renamed so it cannot clash
 {
-	printf '\n/* ---- N1709/z3sios iokit/Kernel/RedwoodWLAN.cpp (MIT), appended by 0142-s21-wifi.sh ---- */\n'
+	printf '\n/* ---- Jesvi iokit/Kernel/RedwoodWLAN.cpp (MIT), appended by 0142-s21-wifi.sh ---- */\n'
 	printf 'extern "C" int sweet_wifi_printf(const char *, ...) __attribute__((format(printf, 1, 2)));\n'
-	perl -pe 's/\bpublish\(/rw_publish(/g; s/\bIOLog\(/sweet_wifi_printf(/g' "$z3s_tmp/RedwoodWLAN.cpp"
+	perl -pe 's/\bpublish\(/rw_publish(/g; s/\bIOLog\(/sweet_wifi_printf(/g' "$jesvi_tmp/RedwoodWLAN.cpp"
 } >> iokit/Kernel/arm/SweetMali.cpp
 
 cat > bsd/dev/sweet_wifi.c <<'EOF_SWEET_SRC'
@@ -71,8 +70,8 @@ cat > bsd/dev/sweet_wifi.c <<'EOF_SWEET_SRC'
  *      granted to the PCIE_GEN2 S2MPU subsystem through Samsung's documented hypervisor call (HVC 0xC6000100,
  *      exynos_set_dev_stage2_ap(): subsystem 7, 32 KiB granules, read-write), as Samsung's own PCIe driver does
  *      before the chip may DMA. The S2MPU table at 0xC1800000 is a vendor reserved region XNU never uses.
- *   4  + the chip: redwood_bcm4375_run() (z3sios): firmware, NVRAM and CLM from /usr/local/etc/wifi on the root,
- *      the rings, an escan, then the station behind en0 for iOS's Wi-Fi.
+ *   4  + the chip: redwood_bcm4375_run() (Jesvi's BCM4375 driver): firmware, NVRAM and CLM from /fw on the root
+ *      (with a /usr/local/etc/wifi fallback), the rings, an escan, then the station behind en0 for iOS's Wi-Fi.
  *
  * sweetwifi_wait=S: seconds before the work starts (default 2; the firmware needs the root mounted, waited for).
  * Register facts (offsets, values, order) from Samsung's GPL Exynos 2100 sources (pcie-exynos-host-v0.c,
@@ -85,6 +84,7 @@ cat > bsd/dev/sweet_wifi.c <<'EOF_SWEET_SRC'
 #include <sys/systm.h>
 #include <sys/errno.h>
 #include <sys/kauth.h>
+#include <sys/sysctl.h>
 #include <sys/vnode.h>
 #include <sys/vnode_internal.h>
 #include <kern/clock.h>
@@ -103,7 +103,7 @@ extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, u
 extern void sweet_mali_log_str(const char *s);
 int sweet_wifi_start(void);
 
-/* what redwood_bcm4375.c (z3sios) takes: the same layout as its struct */
+/* what redwood_bcm4375.c (Jesvi) takes: the same layout as its struct */
 struct redwood_bcm_bus {
 	volatile uint8_t *cfg;
 	volatile uint8_t *dbi;
@@ -129,7 +129,7 @@ wlog(const char *fmt, ...)
 	sweet_mali_log_str(line);
 }
 
-/* z3sios's loader log: their lines already begin "wifi: " and end in a newline */
+/* Jesvi's loader log: their lines already begin "wifi: " and end in a newline */
 void loader_log_line(const char *line);
 void
 loader_log_line(const char *line)
@@ -172,24 +172,41 @@ redwood_wifi_network(uint8_t *name, unsigned *name_length, uint8_t *passphrase, 
 	return false;
 }
 
-/* firmware files: no small image here; /usr/local/etc/wifi on the root (push_rootfs.sh puts the phone's own there) */
-const uint8_t *redwood_image_file(const char *dir, const char *name, uint64_t *size, int *disk_out);
-const uint8_t *
-redwood_image_file(const char *dir, const char *name, uint64_t *size, int *disk_out)
+/*
+ * Jesvi's drivers ask redwood_image_file("fw", NAME, ...) for firmware: on the S20+ that is a file in the small
+ * APFS image. Here the files live on the mounted iOS root under /fw (old layouts: /usr/local/etc/wifi). A load is
+ * kept for the life of the boot: the chip driver asks for the CLM twice and keeps the station firmware itself, and
+ * a second vnode read of a file that may since have been evicted is not worth the saved megabytes.
+ */
+#define WF_MAX      (4U * 1024 * 1024)
+#define WF_SLOTS    10
+struct sweet_fw {
+	char            name[80];
+	const uint8_t  *data;
+	uint64_t        size;
+};
+static struct sweet_fw fw_slot[WF_SLOTS];
+static LCK_GRP_DECLARE(fw_grp, "sweet-fw");
+static LCK_MTX_DECLARE(fw_mtx, &fw_grp);
+
+static const uint8_t *
+fw_cached(const char *name, uint64_t *size)
 {
-	(void)dir; (void)name; (void)size;
-	if (disk_out) {
-		*disk_out = 0;
+	const struct sweet_fw *f;
+
+	for (unsigned i = 0; i < WF_SLOTS; i++) {
+		f = &fw_slot[i];
+		if (f->data != NULL && strncmp(f->name, name, sizeof(f->name)) == 0) {
+			*size = f->size;
+			return f->data;
+		}
 	}
 	return NULL;
 }
 
-#define WF_MAX (4U * 1024 * 1024)
-const uint8_t *redwood_adsp_fw_file(const char *name, uint64_t *size);
-const uint8_t *
-redwood_adsp_fw_file(const char *name, uint64_t *size)
+static const uint8_t *
+fw_read(const char *path, const char *name, uint64_t *size)
 {
-	char path[96];
 	vfs_context_t ctx = vfs_context_kernel();
 	vnode_t vp = NULLVP;
 	struct vnode_attr va;
@@ -199,9 +216,7 @@ redwood_adsp_fw_file(const char *name, uint64_t *size)
 	if (rootvnode == NULLVP) {
 		return NULL;
 	}
-	snprintf(path, sizeof(path), "/usr/local/etc/wifi/%s", name);
 	if (vnode_lookup(path, 0, &vp, ctx) != 0) {
-		wlog("no %s", path);
 		return NULL;
 	}
 	VATTR_INIT(&va);
@@ -210,7 +225,7 @@ redwood_adsp_fw_file(const char *name, uint64_t *size)
 		vnode_put(vp);
 		return NULL;
 	}
-	data = kalloc_data(va.va_data_size, Z_WAITOK);
+	data = kalloc_data((size_t)va.va_data_size, Z_WAITOK);
 	if (data == NULL) {
 		vnode_put(vp);
 		return NULL;
@@ -220,20 +235,97 @@ redwood_adsp_fw_file(const char *name, uint64_t *size)
 	vnode_put(vp);
 	if (err != 0 || left != 0) {
 		wlog("%s: read error %d, %d left", path, err, left);
-		kfree_data(data, va.va_data_size);
+		kfree_data(data, (size_t)va.va_data_size);
 		return NULL;
 	}
+	lck_mtx_lock(&fw_mtx);
+	for (unsigned i = 0; i < WF_SLOTS; i++) {
+		if (fw_slot[i].data == NULL) {
+			strlcpy(fw_slot[i].name, name, sizeof(fw_slot[i].name));
+			fw_slot[i].data = data;
+			fw_slot[i].size = va.va_data_size;
+			break;
+		}
+	}
+	lck_mtx_unlock(&fw_mtx);
 	*size = va.va_data_size;
+	wlog("%s: %llu bytes", path, va.va_data_size);
 	return data;
 }
 
+static const uint8_t *
+fw_file(const char *name, uint64_t *size)
+{
+	char path[128];
+	const uint8_t *data;
+
+	lck_mtx_lock(&fw_mtx);
+	data = fw_cached(name, size);
+	lck_mtx_unlock(&fw_mtx);
+	if (data != NULL) {
+		return data;
+	}
+	snprintf(path, sizeof(path), "/fw/%s", name);
+	data = fw_read(path, name, size);
+	if (data == NULL) {
+		snprintf(path, sizeof(path), "/usr/local/etc/wifi/%s", name);
+		data = fw_read(path, name, size);
+	}
+	if (data == NULL) {
+		wlog("no firmware %s (/fw or /usr/local/etc/wifi)", name);
+	}
+	return data;
+}
+
+const uint8_t *redwood_image_file(const char *dir, const char *name, uint64_t *size, int *disk_out);
+const uint8_t *
+redwood_image_file(const char *dir, const char *name, uint64_t *size, int *disk_out)
+{
+	(void)dir;   /* the S20+'s small APFS image; the S21 reads the mounted root */
+	if (disk_out) {
+		*disk_out = 0;
+	}
+	return fw_file(name, size);
+}
+
+const uint8_t *redwood_adsp_fw_file(const char *name, uint64_t *size);
+const uint8_t *
+redwood_adsp_fw_file(const char *name, uint64_t *size)
+{
+	return fw_file(name, size);
+}
+
+/* fw_file() keeps every buffer; a caller that thinks it owns one must not free it under a later request. */
 void redwood_adsp_fw_free(const uint8_t *data, uint64_t size);
 void
 redwood_adsp_fw_free(const uint8_t *data, uint64_t size)
 {
-	uint8_t *ours = __DECONST(uint8_t *, data);   /* kfree_data() erases its argument: an lvalue */
-	kfree_data(ours, size);
+	(void)data; (void)size;
 }
+
+/* Jesvi's Wi-Fi and net threads take these two from the SoC's power-management driver, which this port has not got. */
+int redwood_battery_external(void);
+int
+redwood_battery_external(void)
+{
+	struct sweet_batt_info {
+		int valid;
+		unsigned soc_x10;
+		unsigned mv;
+		int ma, chgin, charging, full;
+		unsigned dtls01, mode;
+		int temp_x10;
+	} b;
+
+	extern void sweet_max77705_get(struct sweet_batt_info *o);
+
+	bzero(&b, sizeof(b));
+	sweet_max77705_get(&b);
+	return b.valid ? (b.chgin ? 1 : 0) : -1;
+}
+
+volatile int redwood_display_is_on = 1;
+SYSCTL_NODE(_kern, OID_AUTO, redwood, CTLFLAG_RW | CTLFLAG_LOCKED, 0, "redwood phone bits");
 
 /* printf of redwood_net.c / redwood_apple80211.c / RedwoodWLAN.cpp (0142 renames their calls): lines assembled across
  * calls, the first 150 as "wifi: " (kept for the recovery replay), later ones "wnet: " (persistent ring only) */
@@ -716,7 +808,7 @@ wifi_thread(void *arg, wait_result_t wr_)
 	bus.dbi = dbi;
 	bus.mem_phys = PA_MEM;
 	bus.mem_size = SZ_MEM;
-	wlog("W4: chip driver (z3sios redwood_bcm4375), root %s", rootvnode ? "mounted" : "missing");
+	wlog("W4: chip driver (Jesvi BCM4375), root %s", rootvnode ? "mounted" : "missing");
 	redwood_bcm4375_run(&bus);
 }
 
@@ -730,6 +822,7 @@ sweet_wifi_start(void)
 	}
 	started = 1;
 	PE_parse_boot_argn("sweetwifi", &wifi_level, sizeof(wifi_level));
+	PE_parse_boot_argn("wifi_display", &redwood_display_is_on, sizeof(redwood_display_is_on));
 	if (!wifi_level) {
 		return 0;
 	}

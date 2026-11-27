@@ -19,7 +19,7 @@ jobs:
           mkdir -p out
           for f in userland/*.c; do
             n=$(basename "$f" .c)
-            xcrun clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=16.0 -O2 -framework IOKit \
+            xcrun clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=16.0 -O2 -fblocks -framework IOKit \
               -I$G -I$M/src/panfrost/lib -I$M/src/panfrost -I$M/include -I$M/src -I$M/src/panfrost/include -I$M/src/compiler \
               "$f" -o "out/$n"
             codesign -f -s - "out/$n"

@@ -1355,9 +1355,11 @@ sweet_mali_boot(void)
 		extern int sweet_tmu_start(void);   /* 0140 */
 		extern int sweet_cputop_start(void);   /* 0141 */
 		extern int sweet_wifi_start(void);   /* 0142, boot-arg sweetwifi=N */
+		extern void redwood_exynos_bt_init(void);   /* 0142a, boot-arg bt=1 */
 		(void)sweet_tmu_start();
 		(void)sweet_cputop_start();
 		(void)sweet_wifi_start();
+		redwood_exynos_bt_init();
 	}
 	(void)sweet_s21keys_start();   /* S21 side keys (0125) */
 	(void)sweet_s21_battery_start();   /* iOS battery from the MAX77705 gauge (0127), sweetbattery=2 */

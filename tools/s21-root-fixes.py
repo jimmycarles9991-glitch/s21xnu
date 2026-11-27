@@ -16,6 +16,9 @@
   NSPOSIXErrorDomain 5 creating it at run time).
 - Safari "Fraudulent Website Warning" off: the SafeBrowsing XPC service dereferences a null
   Backend::Google::DeviceIdentificationTokenFetcher (SafariSafeBrowsing+0x519d0, far 0x78) in handleGetDatabases.
+- Bluetooth (S21_BT=1, or when /usr/bin/bluetool_stub is present): replace Apple's BlueTool job with the stub
+  (the kernel boots the BCM4375), set BT_HCI_TRANSPORT=H4:POSIX:com.apple.uart.bluetooth for bluetoothd, restore
+  BTAudioHALPlugin.driver, and make /fw for the Wi-Fi and HCD blobs. S21_BT=0 keeps the old no-Bluetooth layout.
 """
 import os, plistlib, sys
 
@@ -39,6 +42,18 @@ CLOCK_JOB = {
     'StandardOutPath': '/dev/console',
     'StandardErrorPath': '/dev/console',
 }
+
+BLUETOOL_LABEL = 'com.apple.BlueTool'
+BLUETOOL_KEY = '/System/Library/LaunchDaemons/com.apple.BlueTool.plist'
+BLUETOOL_JOB = {
+    'Label': BLUETOOL_LABEL,
+    'ProgramArguments': ['/usr/bin/bluetool_stub'],
+    'MachServices': {BLUETOOL_LABEL: True},
+    'UserName': 'mobile',
+    'StandardOutPath': '/dev/console',
+    'StandardErrorPath': '/dev/console',
+}
+BT_TRANSPORT = 'H4:POSIX:com.apple.uart.bluetooth'
 
 REMOVE = {'com.apple.remotemanagementd', 'com.apple.progressd',
           # CPU hogs on this phone (kernel cputop, run190: vmd 96 %, launchd 95 %, mediaserverd 50 %, logd 20 % of a
@@ -89,15 +104,21 @@ def main(root):
         os.makedirs(os.path.dirname(off), exist_ok=True)
         shutil.move(hal, off)
         print('VirtualAudio.plugin moved aside')
-    # The CPU hog itself (plugin hog sampler, run200): BTAudioHALPlugin inside mediaserverd reconnects to the Bluetooth
-    # daemon's XPC service from its connection-invalidated handler at once; there is no Bluetooth stack here, so each
-    # lookup fails and the next starts immediately: mediaserverd ~50 % + launchd ~65 % of a core answering the lookups.
+    # With no Bluetooth stack BTAudioHALPlugin reconnects to bluetoothd's XPC service from its
+    # connection-invalidated handler at once: mediaserverd ~50 % + launchd ~65 % of a core (run200). With the
+    # S21's HCI transport up it belongs back. S21_BT=0 puts it aside again; unset follows the stub binary.
     bt = os.path.join(root, 'System/Library/Audio/Plug-Ins/HAL/BTAudioHALPlugin.driver')
-    if os.path.exists(bt):
-        dst = os.path.join(root, 'System/Library/Audio/Plug-Ins/HAL.disabled')
-        os.makedirs(dst, exist_ok=True)
-        shutil.move(bt, os.path.join(dst, 'BTAudioHALPlugin.driver'))
-        print('BTAudioHALPlugin.driver moved aside')
+    bt_off = os.path.join(root, 'System/Library/Audio/Plug-Ins/HAL.disabled/BTAudioHALPlugin.driver')
+    bt_flag = os.environ.get('S21_BT')
+    bt_on = (bt_flag == '1') if bt_flag is not None else os.path.isfile(os.path.join(root, 'usr/bin/bluetool_stub'))
+    if bt_on and os.path.exists(bt_off):
+        os.makedirs(os.path.dirname(bt), exist_ok=True)
+        shutil.move(bt_off, bt)
+        print('BTAudioHALPlugin.driver restored (S21 Bluetooth)')
+    elif not bt_on and os.path.exists(bt):
+        os.makedirs(os.path.dirname(bt_off), exist_ok=True)
+        shutil.move(bt, bt_off)
+        print('BTAudioHALPlugin.driver moved aside (no Bluetooth)')
     for cfg in glob.glob(os.path.join(root, 'System/Library/Frameworks/MediaToolbox.framework/*/SubServerConfiguration.plist')) + \
             glob.glob(os.path.join(root, 'System/Library/Frameworks/MediaToolbox.framework/SubServerConfiguration.plist')):
         with open(cfg, 'rb') as f:
@@ -109,10 +130,66 @@ def main(root):
                 plistlib.dump(pl, f, fmt=plistlib.FMT_XML)
             os.chmod(cfg, st.st_mode & 0o7777)
             print('recorder server off:', os.path.relpath(cfg, root))
+    # The kernel's Wi-Fi/HCD loader reads /fw/<name> first. The blobs are not in this repo; copy the
+    # BCM4375 station firmware, CLM, NVRAM and the bcm4375B1-{murata,semco}.hcd here before boot.
+    fw = os.path.join(root, 'fw')
+    os.makedirs(fw, exist_ok=True)
+    os.chmod(fw, 0o755)
+    stub = os.path.join(root, 'usr/bin/bluetool_stub')
+    if bt_on and not os.path.isfile(stub):
+        print('S21 Bluetooth: /usr/bin/bluetool_stub is missing; Apple BlueTool left alone')
+        bt_on = False
+    if bt_on:
+        # Overwrite Apple's standalone job: launchd would otherwise start its BlueTool and let it
+        # probe a chip it does not know. The on-disk name has varied in case across iOS roots.
+        standalone = os.path.join(root, BLUETOOL_KEY.lstrip('/'))
+        candidates = {standalone}
+        for pat in ('*BlueTool.plist', '*bluetool.plist', '*BLUETOOL.plist'):
+            candidates.update(glob.glob(os.path.join(root, 'System/Library/LaunchDaemons', pat)))
+        for job_path in sorted(candidates):
+            if os.path.exists(job_path) and _read_plist(job_path) == BLUETOOL_JOB:
+                continue
+            os.makedirs(os.path.dirname(job_path), exist_ok=True)
+            with open(job_path, 'wb') as f:
+                plistlib.dump(BLUETOOL_JOB, f, fmt=plistlib.FMT_BINARY)
+            os.chmod(job_path, 0o644)
+            print('BlueTool replaced with bluetool_stub:', os.path.relpath(job_path, root))
+
     path = os.path.join(root, 'System/Library/xpc/launchd.plist')
     with open(path, 'rb') as f:
         pl = plistlib.load(f)
     changed = False
+    if bt_on:
+        jobs = pl.setdefault('LaunchDaemons', {})
+        for k in [k for k, j in jobs.items() if isinstance(j, dict) and
+                  (j.get('Label') == BLUETOOL_LABEL or k.lower().endswith('/com.apple.bluetool.plist'))]:
+            if k != BLUETOOL_KEY:
+                del jobs[k]
+                changed = True
+        if jobs.get(BLUETOOL_KEY) != BLUETOOL_JOB:
+            jobs[BLUETOOL_KEY] = BLUETOOL_JOB
+            changed = True
+            print('launchd: com.apple.BlueTool replaced with the S21 stub')
+        for sect in ('LaunchDaemons', 'LaunchAgents'):
+            for j in pl.get(sect, {}).values():
+                if isinstance(j, dict) and j.get('Label') == 'com.apple.bluetoothd':
+                    env = j.setdefault('EnvironmentVariables', {})
+                    if env.get('BT_HCI_TRANSPORT') != BT_TRANSPORT:
+                        env['BT_HCI_TRANSPORT'] = BT_TRANSPORT
+                        changed = True
+                        print('bluetoothd: BT_HCI_TRANSPORT =', BT_TRANSPORT)
+        for standalone in glob.glob(os.path.join(root, 'System/Library/LaunchDaemons/*bluetoothd.plist')):
+            j = _read_plist(standalone)
+            if not isinstance(j, dict) or j.get('Label') != 'com.apple.bluetoothd':
+                continue
+            env = j.setdefault('EnvironmentVariables', {})
+            if env.get('BT_HCI_TRANSPORT') != BT_TRANSPORT:
+                env['BT_HCI_TRANSPORT'] = BT_TRANSPORT
+                st = os.stat(standalone)
+                with open(standalone, 'wb') as f:
+                    plistlib.dump(j, f, fmt=plistlib.FMT_BINARY)
+                os.chmod(standalone, st.st_mode & 0o7777)
+                print('bluetoothd standalone: BT_HCI_TRANSPORT =', BT_TRANSPORT)
     if os.path.isfile(os.path.join(root, 'usr/bin/malinop')):
         old = pl.get('LaunchDaemons', {})
         if old.get(CLOCK_KEY) != CLOCK_JOB:
