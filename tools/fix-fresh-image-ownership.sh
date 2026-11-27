@@ -25,10 +25,11 @@ ROOT=${1:-}
 }
 
 # -h keeps symlinks as symlinks; broken Apple symlinks must not abort the pass.
-# GNU chown exits 123 when some paths vanish during the walk; ignore only that
-# exact status after verifying the important directories below.
-chown -R -h 0:0 "$ROOT" || [ $? -eq 123 ]
-chown -R -h 501:501 "$ROOT/private/var/mobile" || [ $? -eq 123 ]
+# GNU chown exits 1 (or 123 via xargs) when some paths vanish during the walk.
+# Ignore those non-fatal walk errors, then verify the important directories
+# below so a real failure still stops the script.
+chown -R -h 0:0 "$ROOT" || true
+chown -R -h 501:501 "$ROOT/private/var/mobile" || true
 
 check_owner() {
     local path=$1 expect=$2 actual
