@@ -92,12 +92,15 @@ echo 'IPSW filesystem DMGs verified'
 # Recover the Mac-generated shader data and proven wallpaper payloads from an
 # existing image. Pin every shader file; wallpaper files are content-checked
 # by tools/fresh-image-ui-fixes.py later.
+# The sh -c below must exit 0 even when its last file is not a PNG payload;
+# otherwise pipefail makes the count assignment abort silently.
 png_heic_count() {
   LC_ALL=C find "$WALL" -type f -iname '*.heic' -exec sh -c '
     for f do
       magic=$(head -c 8 "$f" | od -An -tx1 | tr -d " \n")
       [ "$magic" = 89504e470d0a1a0a ] && echo x
     done
+    exit 0
   ' _ {} + | wc -l
 }
 need_source=0
