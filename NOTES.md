@@ -482,6 +482,7 @@ Expected outcome is uncertain: best case stable/faster with mostly correct icons
 - Decision: rebuild from the known-good Wi-Fi/BT backup lineage, changing only V33 EAGL and gputest launchd/jetsam state. Deliberately keep the older proven SweetMetal binary `c4c24136...` rather than the newer `fe506c38...`, so the proven GPU runtime lineage is preserved.
 - New host-only builder `tools/build-known-good-v33-gputest-image.sh` copies sparse from the known-good base, pins base/EAGL/s21-gpu-test/old-EAGL hashes, verifies the base backboardd EAGL shim, BlueTool stub and clock-restore job, installs V33 EAGL plus the gputest job, re-verifies cached/standalone plists and both jetsam overrides, fscks, hashes and writes `/mnt/7FEF-EA6C/ios/build/iosroot-s21-known-good-v33-gputest.img` plus `.sha256`. It never pushes, boots, kexecs, flashes, partitions or SSHes. Local checks PASS: executable `755`, `bash -n`, `python3 -m py_compile tools/s21-gputest-job.py`, both embedded Python heredocs compile, `git diff --check`. It has **not** been run because HFS+ mount/chown require the user's `sudo`; no output image exists yet.
 - `/home/tom/Downloads/push-and-swap-fresh.sh` was updated outside git to accept active hash `293c53ed...33077`; `bash -n` PASS.
+- Builder and triage notes committed as `08ce5c2` on `testing-mesa-port` and pushed to `origin`; untracked `s20/` was not added. This short notes-only follow-up records that commit hash.
 
 ## Next move
 
