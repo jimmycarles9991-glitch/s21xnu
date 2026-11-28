@@ -20,7 +20,7 @@ REPO=${REPO:-/home/tom/s21xnu-linux-mesa}
 WORK=${WORK:-/home/tom/s21-fresh-build/latest}
 DMGDIR=${DMGDIR:-/home/tom/s21-fresh-build/dmg}
 OUT=${OUT:-/mnt/7FEF-EA6C/ios/build/iosroot-s21-latest-gputest.img}
-SOURCE_IMAGE=${SOURCE_IMAGE:-/mnt/7FEF-EA6C/ios/build/iosroot-s21-fresh-v1.img}
+SOURCE_IMAGE=${SOURCE_IMAGE:-/mnt/7FEF-EA6C/ios/build/iosroot-s21-wifibt-v1.pre-asset-copy.fixed.img}
 STAGE=$WORK/stage
 WALL=$WORK/wallpaper
 SRC_MNT=${SRC_MNT:-/mnt/iosroot-gputest-source}
@@ -60,7 +60,6 @@ trap cleanup EXIT
 [ -f "$REPO/tools/mkiosroot.sh" ] || die "missing mkiosroot.sh in $REPO"
 [ -f "$REPO/tools/build-fresh-image.sh" ] || die "missing build-fresh-image.sh in $REPO"
 [ -f "$REPO/tools/s21-gputest-job.py" ] || die "missing s21-gputest-job.py in $REPO"
-[ -f "$SOURCE_IMAGE" ] || die "missing shader/wallpaper source image: $SOURCE_IMAGE"
 [ ! -e "$OUT" ] || die "refusing to overwrite $OUT; move it aside first"
 [ ! -e "$OUT.sha256" ] || die "refusing to overwrite $OUT.sha256"
 for m in "$SRC_MNT" "$BUILD_MNT" "$FINAL_MNT"; do
@@ -110,6 +109,7 @@ while read -r want name; do
 done <<< "$STAGE_HASHES"
 [ "$(png_heic_count)" -ge 16 ] || need_source=1
 if [ "$need_source" -eq 1 ]; then
+  [ -f "$SOURCE_IMAGE" ] || die "missing shader/wallpaper source image: $SOURCE_IMAGE"
   echo "recovering shader data and wallpaper from $SOURCE_IMAGE"
   rm -rf -- "$WALL"
   mkdir -p "$WALL" "$SRC_MNT"
