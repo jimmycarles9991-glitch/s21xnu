@@ -93,6 +93,14 @@ echo 'IPSW filesystem DMGs verified'
 # Recover the Mac-generated shader data and proven wallpaper payloads from an
 # existing image. Pin every shader file; wallpaper files are content-checked
 # by tools/fresh-image-ui-fixes.py later.
+png_heic_count() {
+  LC_ALL=C find "$WALL" -type f -iname '*.heic' -exec sh -c '
+    for f do
+      magic=$(head -c 8 "$f" | od -An -tx1 | tr -d " \n")
+      [ "$magic" = 89504e470d0a1a0a ] && echo x
+    done
+  ' _ {} + | wc -l
+}
 need_source=0
 while read -r want name; do
   [ -n "$name" ] || continue
@@ -100,9 +108,11 @@ while read -r want name; do
     need_source=1
   fi
 done <<< "$STAGE_HASHES"
+[ "$(png_heic_count)" -ge 16 ] || need_source=1
 if [ "$need_source" -eq 1 ]; then
   echo "recovering shader data and wallpaper from $SOURCE_IMAGE"
-  mkdir -p "$SRC_MNT"
+  rm -rf -- "$WALL"
+  mkdir -p "$WALL" "$SRC_MNT"
   if ! mount -t hfsplus -o loop,ro,force,uid=0,gid=0,nls=utf8 "$SOURCE_IMAGE" "$SRC_MNT" 2>"$WORK/source-mount.err"; then
     echo 'read-only HFS mount failed; retrying rw on the source (journal metadata only)'
     mount -t hfsplus -o loop,rw,force,uid=0,gid=0,nls=utf8 "$SOURCE_IMAGE" "$SRC_MNT"
@@ -113,13 +123,15 @@ if [ "$need_source" -eq 1 ]; then
     install -D -m 644 "$bundle/$name" "$STAGE/$name"
   done
   [ -d "$SRC_MNT/Library/Wallpaper" ] || die "missing $SRC_MNT/Library/Wallpaper"
-  cp -a "$SRC_MNT/Library/Wallpaper/." "$WALL/"
+  # HFS+ cannot preserve every Mac metadata bit here; cp -a fails with
+  # "No data available". Only file contents and relative names are needed.
+  cp -R --no-preserve=all "$SRC_MNT/Library/Wallpaper/." "$WALL/"
   sync
   umount "$SRC_MNT" || umount -l "$SRC_MNT" || true
   rmdir "$SRC_MNT" 2>/dev/null || true
 fi
 (cd "$STAGE" && printf '%s\n' "$STAGE_HASHES" | sha256sum -c - >/dev/null) || die 'shader data hash mismatch'
-png_wallpapers=$(find "$WALL" -type f -name '*.heic' -exec sh -c 'head -c 8 "$1" | grep -q "^.PNG" && echo x' _ {} \; | wc -l)
+png_wallpapers=$(png_heic_count)
 [ "$png_wallpapers" -ge 16 ] || die "expected at least 16 PNG-as-HEIC wallpapers, found $png_wallpapers"
 echo "shader data and $png_wallpapers wallpaper payloads recovered"
 
