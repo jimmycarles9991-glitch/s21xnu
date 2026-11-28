@@ -7,6 +7,7 @@
 #   - latest linux-mesa-ios V33 artifacts (CI run 45822449444)
 #   - SEMCO-only BCM4375 Wi-Fi/BT firmware from /fw
 #   - BlueTool stub, H4 transport, early clock restore, EAGL shim via s21-root-fixes.py
+#   - com.s21.gputest LaunchDaemon (paint once, jetsam override)
 #   - Opaline trial app
 #   - Mac-generated SweetMetal shader data from the proven image
 #   - host epoch for the malinop clock restore
@@ -31,7 +32,7 @@ KERNEL=${KERNEL:-/home/tom/Downloads/kernel-wifi-bt/kernel.development.sweet}
 OPALINE_IPA=${OPALINE_IPA:-/home/tom/Downloads/s21-trial-ipas/Opaline_1.12.0.ipa}
 
 SIZE=17179869184
-BASE_SHA=4ad2e35a51e4e70221325799b0b88c8077cf23dc933c58175bcfe3654a9f86bb
+BASE_SHA=${BASE_SHA:-4ad2e35a51e4e70221325799b0b88c8077cf23dc933c58175bcfe3654a9f86bb}
 
 # --- Userland hashes (ios-tools-wifi-bt, CI 45936492665) ---
 TOOL_HASHES=(
@@ -81,7 +82,7 @@ need_file "$IMG"
 need_hash "$IMG" "$BASE_SHA"
 [ ! -e "$MNT" ] || die "mountpoint $MNT already exists; clean it up"
 command -v unzip >/dev/null 2>&1 || die 'unzip required'
-for f in "$REPO/tools/sweet-root-tweaks.py" "$REPO/tools/s21-setup-skip.py" "$REPO/tools/s21-root-fixes.py"; do
+for f in "$REPO/tools/sweet-root-tweaks.py" "$REPO/tools/s21-setup-skip.py" "$REPO/tools/s21-root-fixes.py" "$REPO/tools/s21-gputest-job.py"; do
   [ -f "$f" ] || die "missing $f"
 done
 
@@ -203,6 +204,9 @@ chown root:wheel "$MNT/usr/local/etc/sweet_epoch"
 # --- Root fixes: Bluetooth stub + H4 transport, EAGL shim, clock job, wifid ---
 S21_BT=1 S21_EAGL_SHIM=1 python3 "$REPO/tools/s21-root-fixes.py" "$MNT"
 
+# --- GPU self-test: paint one frame, then let backboardd present the UI ---
+python3 "$REPO/tools/s21-gputest-job.py" "$MNT"
+
 # --- Install Opaline trial app ---
 tmpdir=$(mktemp -d /tmp/opencode/fresh-opaline.XXXXXX)
 trap 'cleanup; rm -rf "$tmpdir"' EXIT
@@ -234,6 +238,12 @@ bts = [j for j in pl.get('LaunchDaemons', {}).values()
        if isinstance(j, dict) and j.get('Label') == 'com.apple.bluetoothd']
 if not bts or bts[0].get('EnvironmentVariables', {}).get('BT_HCI_TRANSPORT') != 'H4:POSIX:com.apple.uart.bluetooth':
     raise SystemExit('STOP: bluetoothd H4 transport missing')
+gputest_key = '/System/Library/LaunchDaemons/com.s21.gputest.plist'
+gputest_job = pl.get('LaunchDaemons', {}).get(gputest_key)
+if not gputest_job or gputest_job.get('ProgramArguments') != ['/usr/bin/s21-gpu-test']:
+    raise SystemExit('STOP: com.s21.gputest cached job missing')
+if gputest_job.get('EnvironmentVariables', {}).get('S21_GPU_TEST_PAINT_ONCE') != '1':
+    raise SystemExit('STOP: com.s21.gputest would paint the framebuffer forever')
 for p in glob.glob(os.path.join(root, 'System/Library/LaunchDaemons', '*BlueTool*.plist')):
     with open(p, 'rb') as f:
         if plistlib.load(f) != job:
@@ -264,4 +274,4 @@ final_sha=$(awk '{print $1}' "$IMG.sha256")
 [ "$final_sha" != "$BASE_SHA" ] || die 'final image identical to base'
 stat -c '%n %s %U:%G %a' "$IMG"
 cat "$IMG.sha256"
-echo "FRESH_IPSW_IMAGE_READY sha=$final_sha base=$BASE_SHA kernel=$KERNEL_SHA mesa=V33 tools=wifi-bt wifi=SEMCO bt=H4 apps=Opaline"
+echo "FRESH_IPSW_IMAGE_READY sha=$final_sha base=$BASE_SHA kernel=$KERNEL_SHA mesa=V33 tools=wifi-bt wifi=SEMCO bt=H4 gpu_job=paint-once apps=Opaline"
