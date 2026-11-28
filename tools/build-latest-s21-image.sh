@@ -22,7 +22,12 @@ DMGDIR=${DMGDIR:-/home/tom/s21-fresh-build/dmg}
 OUT=${OUT:-/mnt/7FEF-EA6C/ios/build/iosroot-s21-latest-gputest.img}
 SOURCE_IMAGE=${SOURCE_IMAGE:-/mnt/7FEF-EA6C/ios/build/iosroot-s21-wifibt-v1.pre-asset-copy.fixed.img}
 STAGE=$WORK/stage
-WALL=$WORK/wallpaper
+# fresh-image-ui-fixes.py expects a source *root* containing Library/Wallpaper.
+# Older runs staged the wallpaper tree directly at $WORK/wallpaper; migrate it
+# automatically so a rerun does not need manual file moves.
+WALL_SOURCE_ROOT=${WALL_SOURCE_ROOT:-$WORK}
+WALL=$WALL_SOURCE_ROOT/Library/Wallpaper
+LEGACY_WALL=$WORK/wallpaper
 SRC_MNT=${SRC_MNT:-/mnt/iosroot-gputest-source}
 BUILD_MNT=${BUILD_MNT:-/mnt/iosroot-latest-gputest}
 FINAL_MNT=${FINAL_MNT:-/mnt/iosroot-latest-final}
@@ -39,11 +44,52 @@ APPS_SHA=391f2df322c3172b021b2874f6da5c3e78b70b3df8f502e1a4af2b1d715c4608
 STAGE_HASHES='55da3071197242625de090599c17ef6013cf474f02629fca2ba24db2ada6e05d fcmap.txt
 4ee25214d00aac12e6361cfe284f6105080e39dd90ff26183bd4211b34272a69 shaders.smsp
 0c06367e267e268896715120c116b6a5500303f63cbe70d364d8321cb77e0d81 variants.txt'
+# Exact nested-installer hash from the run that stopped before the UI fixes.
+# Only this known stale partial is removed automatically; any other existing
+# output is left alone and the script refuses to overwrite it.
+KNOWN_PARTIAL_SHA=8293431c3686fad89ead2eff2cd0359fdce08f67343c503de250f4c5ae82d538
 
 die() { echo "STOP: $*" >&2; exit 1; }
 hash() { sha256sum "$1" | awk '{print $1}'; }
 check_hash() { [ "$(hash "$1")" = "$2" ]; }
 need_hash() { check_hash "$1" "$2" || die "hash mismatch: $1"; }
+png_heic_count() {
+  local dir=${1:-$WALL}
+  [ -d "$dir" ] || { echo 0; return 0; }
+  # The trailing "exit 0" is required: pipefail otherwise aborts on the last
+  # batched file when it is not one of the PNG-as-HEIC payloads.
+  LC_ALL=C find "$dir" -type f -iname '*.heic' -exec sh -c '
+    for f do
+      magic=$(head -c 8 "$f" | od -An -tx1 | tr -d " \n")
+      [ "$magic" = 89504e470d0a1a0a ] && echo x
+    done
+    exit 0
+  ' _ {} + | wc -l
+}
+known_failed_partial() {
+  [ -f "$OUT" ] || return 1
+  [ -f "$OUT.sha256" ] || return 1
+  [ "$(stat -c %s "$OUT")" = 17179869184 ] || return 1
+  [ "$(wc -l < "$OUT.sha256")" -eq 1 ] || return 1
+  grep -qxF "$KNOWN_PARTIAL_SHA  $OUT" "$OUT.sha256" || return 1
+  [ "$(hash "$OUT")" != "$KNOWN_PARTIAL_SHA" ] || return 1
+}
+remove_known_failed_partial() {
+  if [ -e "$OUT" ] || [ -e "$OUT.sha256" ]; then
+    if known_failed_partial; then
+      echo "removing stale failed partial image from the interrupted UI-fix build"
+      rm -f -- "$OUT" "$OUT.sha256"
+    fi
+  fi
+}
+migrate_wallpaper_stage() {
+  [ "$WALL" != "$LEGACY_WALL" ] || return 0
+  [ ! -e "$WALL" ] || return 0
+  [ -d "$LEGACY_WALL" ] || return 0
+  echo "migrating staged wallpaper to $WALL"
+  mkdir -p -- "$(dirname "$WALL")"
+  mv -- "$LEGACY_WALL" "$WALL"
+}
 cleanup() {
   for m in "$FINAL_MNT" "$BUILD_MNT" "$SRC_MNT"; do
     if mountpoint -q "$m" 2>/dev/null; then
@@ -60,6 +106,7 @@ trap cleanup EXIT
 [ -f "$REPO/tools/mkiosroot.sh" ] || die "missing mkiosroot.sh in $REPO"
 [ -f "$REPO/tools/build-fresh-image.sh" ] || die "missing build-fresh-image.sh in $REPO"
 [ -f "$REPO/tools/s21-gputest-job.py" ] || die "missing s21-gputest-job.py in $REPO"
+remove_known_failed_partial
 [ ! -e "$OUT" ] || die "refusing to overwrite $OUT; move it aside first"
 [ ! -e "$OUT.sha256" ] || die "refusing to overwrite $OUT.sha256"
 for m in "$SRC_MNT" "$BUILD_MNT" "$FINAL_MNT"; do
@@ -73,7 +120,9 @@ command -v unzip >/dev/null 2>&1 || die 'unzip required'
 echo "verifying IPSW: $(hash "$IPSW")"
 need_hash "$IPSW" "$IPSW_SHA"
 
-mkdir -p "$WORK" "$STAGE" "$WALL" "$DMGDIR"
+mkdir -p "$WORK" "$STAGE" "$DMGDIR"
+migrate_wallpaper_stage
+mkdir -p "$WALL"
 OS=$DMGDIR/087-86698-044.dmg
 SYSOS=$DMGDIR/087-86593-047.dmg
 APPS=$DMGDIR/087-86715-047.dmg
@@ -92,17 +141,6 @@ echo 'IPSW filesystem DMGs verified'
 # Recover the Mac-generated shader data and proven wallpaper payloads from an
 # existing image. Pin every shader file; wallpaper files are content-checked
 # by tools/fresh-image-ui-fixes.py later.
-# The sh -c below must exit 0 even when its last file is not a PNG payload;
-# otherwise pipefail makes the count assignment abort silently.
-png_heic_count() {
-  LC_ALL=C find "$WALL" -type f -iname '*.heic' -exec sh -c '
-    for f do
-      magic=$(head -c 8 "$f" | od -An -tx1 | tr -d " \n")
-      [ "$magic" = 89504e470d0a1a0a ] && echo x
-    done
-    exit 0
-  ' _ {} + | wc -l
-}
 need_source=0
 while read -r want name; do
   [ -n "$name" ] || continue
@@ -158,7 +196,7 @@ tail -5 "$WORK/install.log"
 echo 'applying UI, migration, gputest and ownership repairs'
 mkdir -p "$FINAL_MNT"
 mount -t hfsplus -o loop,rw,force,uid=0,gid=0,nls=utf8 "$OUT" "$FINAL_MNT"
-python3 "$REPO/tools/fresh-image-ui-fixes.py" "$FINAL_MNT" --wallpaper-source "$WALL" > "$WORK/ui-fixes.log" 2>&1 || {
+python3 "$REPO/tools/fresh-image-ui-fixes.py" "$FINAL_MNT" --wallpaper-source "$WALL_SOURCE_ROOT" > "$WORK/ui-fixes.log" 2>&1 || {
   cat "$WORK/ui-fixes.log" >&2
   die 'fresh-image-ui-fixes.py failed'
 }
